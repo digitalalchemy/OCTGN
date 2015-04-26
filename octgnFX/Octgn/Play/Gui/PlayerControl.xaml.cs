@@ -71,5 +71,12 @@ namespace Octgn.Play.Gui
             if (pile == null) e.Accepted = false;
             else e.Accepted = !pile.Collapsed;
         }
+
+        private void ScrollViewer_PreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
+        {
+            System.Windows.Controls.ScrollViewer scv = (System.Windows.Controls.ScrollViewer)sender;
+            scv.ScrollToHorizontalOffset(scv.HorizontalOffset - e.Delta/4);
+            e.Handled = true;
+        }
     }
 }

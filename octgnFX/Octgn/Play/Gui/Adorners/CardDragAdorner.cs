@@ -5,7 +5,6 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
-using Octgn.Definitions;
 
 namespace Octgn.Play.Gui.Adorners
 {
@@ -41,16 +40,16 @@ namespace Octgn.Play.Gui.Adorners
 
         //fix MAINWINDOW bug
         public CardDragAdorner(CardControl anchor, CardControl sourceCard, Vector mousePoint)
-            : base(Program.PlayWindow.Content as UIElement)
+            : base(WindowManager.PlayWindow.Content as UIElement)
         {
             SourceCard = sourceCard;
             bool isCardInverted = anchor.IsOnTableCanvas && (Player.LocalPlayer.InvertedTable ^ anchor.IsInverted);
             Point cardOrigin;
             if (isCardInverted)
             {
-                CardDef cardDef = Program.Game.Definition.CardDefinition;
-                cardOrigin = new Point(cardDef.Width, cardDef.Height);
-                _mouseOffset = new Vector(cardDef.Width - mousePoint.X, cardDef.Height - mousePoint.Y);
+				// If adjorners are fucked up, try sourceCard instead of anchor and vise versa
+                cardOrigin = new Point(anchor.Card.Size.Width, anchor.Card.Size.Height);
+                _mouseOffset = new Vector(anchor.Card.Size.Width - mousePoint.X, anchor.Card.Size.Height - mousePoint.Y);
             }
             else
             {
@@ -58,11 +57,18 @@ namespace Octgn.Play.Gui.Adorners
                 _mouseOffset = mousePoint;
             }
             //fix MAINWINDOW bug
-            _basePt = anchor.TranslatePoint(cardOrigin, Program.PlayWindow.Content as UIElement);
+            _basePt = anchor.TranslatePoint(cardOrigin, WindowManager.PlayWindow.Content as UIElement);
 
             _faceUp = sourceCard.IsAlwaysUp || sourceCard.Card.FaceUp;
             _lightRedBrush = Brushes.Red.Clone();
             _faceDownBrush = new ImageBrush(sourceCard.Card.GetBitmapImage(false));
+
+            var bim = new BitmapImage();
+            bim.BeginInit();
+            bim.CacheOption = BitmapCacheOption.OnLoad;
+            bim.UriSource = new Uri(anchor.Card.Size.Front);
+            bim.EndInit();
+
             _faceUpBrush = _faceUp
                                ? new VisualBrush(sourceCard.GetCardVisual())
                                      {
@@ -70,7 +76,7 @@ namespace Octgn.Play.Gui.Adorners
                                          ViewboxUnits = BrushMappingMode.Absolute
                                      }
                                : (Brush)
-                                 new ImageBrush(new BitmapImage(new Uri(Program.Game.Definition.CardDefinition.Front)));
+                                 new ImageBrush(bim);
             _invertTransform = new ScaleTransform {CenterX = 0.5, CenterY = 0.5};
             _faceUpBrush.RelativeTransform = _invertTransform;
             if (_faceUpBrush is VisualBrush)
@@ -173,9 +179,9 @@ namespace Octgn.Play.Gui.Adorners
                  Math.Abs(size.Height - _child.Height) > float.Epsilon))
             {
                 _mouseAdjustment +=
-                    new Vector(_mouseOffset.X*(size.Width - _child.Width)/Program.Game.Definition.CardDefinition.Width,
+                    new Vector(_mouseOffset.X * (size.Width - _child.Width) / SourceCard.Card.Size.Width,
                                _mouseOffset.Y*(size.Height - _child.Height)/
-                               Program.Game.Definition.CardDefinition.Height);
+                               SourceCard.Card.Size.Height);
                 if (_offsetTransform != null)
                 {
                     _offsetTransform.X *= size.Width/_child.Width;

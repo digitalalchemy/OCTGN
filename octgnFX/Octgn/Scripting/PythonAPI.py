@@ -1,4 +1,7 @@
-﻿#Rotation constants
+﻿from System.IO import Directory, Path
+from System.Collections.Generic import *
+from System import *
+#Rotation constants
 Rot0 = 0
 Rot90 = 1
 Rot180 = 2
@@ -13,8 +16,14 @@ def mute():
   _api.Mute(True)
   return Muted()
 
+def wd(relativePath):
+  return Path.Combine(_wd,relativePath)
+
 def notify(message):
   _api.Notify(message)
+
+def notifyBar(color, message):
+  _api.NotifyBar(color, message)
 
 def whisper(message):
   _api.Whisper(message)
@@ -22,9 +31,18 @@ def whisper(message):
 def rnd(min, max):
   return _api.Random(min, max)
 
-def webRead(url):
-  apiResult = _api.Web_Read(url)
+def webRead(url, timeout=0):
+  apiResult = _api.Web_Read(url, timeout)
   return (apiResult.Item1, apiResult.Item2)
+
+def currentGameName():
+  return _api.GetGameName()
+
+def playSound(name):
+  return _api.PlaySound(name)
+
+def turnNumber():
+  return _api.TurnNumber()
 
 def openUrl(url):
   return _api.Open_URL(url)
@@ -35,13 +53,25 @@ def confirm(message):
 def askInteger(question, defaultAnswer):
   return _api.AskInteger(question, defaultAnswer)
 
+def askChoice(question, choices = [], colors = [], customButtons = []):
+  choiceList = List[String](choices)
+  if len(colors) != len(choices):
+    colors = []
+    for count in choices:
+      colors.append('None')
+  colorList = List[String](colors)
+  buttonList = List[String](customButtons)
+  apiResult = _api.AskChoice(question, choiceList, colorList, buttonList)
+  return apiResult
+
 def askMarker():
   apiResult = _api.AskMarker()
   if apiResult == None: return (None, 0)
   return ((apiResult.Item1, apiResult.Item2), apiResult.Item3)
 
-def askCard(restriction = None):
-  apiResult = _api.AskCard(restriction)
+def askCard(properties = {},operator = None):
+  realDick = Dictionary[String,String](properties)
+  apiResult = _api.AskCard(realDick,operator)
   if apiResult == None: return (None, 0)
   return (apiResult.Item1, apiResult.Item2)
 
@@ -50,6 +80,58 @@ def getGlobalVariable(gname):
 
 def setGlobalVariable(gname,gvalue): 
   _api.SetGlobalVariable(gname,gvalue)
+
+def isTableBackgroundFlipped():
+  return _api.IsTableBackgroundFlipped()
+
+def setTableBackgroundFlipped(flipped):
+  _api.SetTableBackgroundFlipped(flipped)
+
+def getSetting(name,default):
+  return _api.GetSetting(name,default)
+
+def setSetting(name,value):
+  _api.SaveSetting(name,value)
+
+def remoteCall(player,func,args):
+  realArgs = convertToArgsString(args)
+  #notify("Sending remote call {}({}) to {}".format(func,realArgs,player))
+  _api.RemoteCall(player._id,func,realArgs)
+
+def update():
+  _api.Update()
+
+def convertToArgsString(obj):
+  if type(obj) is list:
+    retList = []
+    for c in obj:
+      retList.append(convertToString(c))
+    return ",".join(retList)
+  return convertToString(obj)
+
+def convertToString(obj):
+  if type(obj) is None:
+    return "None"
+  if type(obj) is list:
+    retList = []
+    for c in obj:
+      retList.append(convertToString(c))
+    return "[" + ",".join(retList) + "]"
+  if type(obj) is Player:
+    return "Player({})".format(obj._id)
+  if isinstance(obj, Group):
+    if type(obj) is Table:
+      return "table"
+    if type(obj) is Hand:
+      return "Hand({}, Player({}))".format(obj._id,obj.player._id)
+    return "Pile({}, '{}', Player({}))".format(obj._id,obj.name.replace("'","\'"),obj.player._id)
+  if type(obj) is Card:
+    return "Card({})".format(obj._id)
+  if type(obj) is Counter:
+    return "Counter({},{},{})".format(obj._id,obj.name,obj.player._id)
+  if isinstance(obj, basestring):
+    return "\"{}\"".format(obj);
+  return str(obj)
 
 class Markers(object):
   def __init__(self, card):
@@ -92,13 +174,10 @@ class Card(object):
   def __format__(self, format_spec):
     return '{#%d}' % self._id
   @property
-  def isAlternateImage(self): return _api.IsAlternateImage(self._id)
+  def alternate(self): return _api.CardAlternate(self._id)
   @property
-  def switchImage(self): _api.SwitchImage(self._id)
-  @property
-  def isAlternate(self): return _api.IsAlternate(self._id)
-  @property
-  def switchWithAlternate(self): _api.SwitchWithAlternate(self._id)
+  def alternates(self): return _api.CardAlternates(self._id)
+  def alternateProperty(self,alt,prop): return _api.CardAlternateProperty(self._id,alt,prop)
   @property
   def model(self): return _api.CardModel(self._id)
   @property
@@ -109,6 +188,7 @@ class Card(object):
   def owner(self): return Player(_api.CardOwner(self._id))
   @property
   def controller(self): return Player(_api.CardController(self._id))
+  def setController(self, player): _api.SetController(self._id, player._id)
   @property
   def group(self): return eval(_api.GroupCtor(_api.CardGroup(self._id)))
   @property
@@ -129,11 +209,14 @@ class Card(object):
   def markers(self):
     if self._markers == None: self._markers = Markers(self)
     return self._markers
+  def switchTo(self, alt = ""): 
+    _api.CardSwitchTo(self._id,alt)
   def moveTo(self, group, index = None):
     _api.CardMoveTo(self._id, group._id, index)
   def moveToBottom(self, pile):
     self.moveTo(pile, len(pile))
   def moveToTable(self, x, y, forceFaceDown = False):
+    #notify("{} {}".format(x,y))
     _api.CardMoveToTable(self._id, x, y, forceFaceDown)
   def sendToBack(self):
     _api.CardSetIndex(self._id, 0, True)
@@ -144,7 +227,9 @@ class Card(object):
   @property
   def getIndex(self): return _api.CardGetIndex(self._id)
   def select(self): _api.CardSelect(self._id)
+  def peek(self): _api.CardPeek(self._id)
   def target(self, active = True): _api.CardTarget(self._id, active)
+  def arrow(self, targetCard, active = True): _api.CardTargetArrow(self._id, targetCard._id, active)
   @property
   def targetedBy(self):
     playerId = _api.CardTargeted(self._id)
@@ -164,6 +249,8 @@ class Card(object):
   def height():
     if Card._height == None: Card._fetchSize()
     return Card._height
+  def delete(self):
+    _api.CardDelete(self._id)
 
 class NamedObject(object):
   def __init__(self, id, name):
@@ -193,17 +280,32 @@ class Group(NamedObject):
     count = len(self)
     if count == 0: return None
     return self[rnd(0, count - 1)]
+  @property
+  def visibility(self): return _api.GroupGetVisibility(self._id)
+  def setVisibility(self, value): _api.GroupSetVisibility(self._id, value)
+  @property
+  def controller(self):
+    return Player(_api.GroupController(self._id))
+  def setController(self, player): _api.GroupSetController(self._id, player._id)
+  def create(self, model, quantity = 1):
+    ids = _api.Create(model, self._id, quantity)
+    if quantity != 1:
+      return [Card(id) for id in ids]
+    else:
+      return Card(ids[0]) if len(ids) == 1 else None
 
 class Table(Group):
   def __init__(self):
     Group.__init__(self, 0x01000000, 'Table')
-  def create(self, model, x, y, quantity = 1, persist = False):
-    ids = _api.CreateOnTable(model, x, y, persist, quantity)
+  def create(self, model, x, y, quantity = 1, persist = False, facedown = False):
+    ids = _api.CreateOnTable(model, x, y, persist, quantity,facedown)
     #if ids == None or ids == []: return None
     if quantity != 1:
       return [Card(id) for id in ids]
     else:
       return Card(ids[0]) if len(ids) == 1 else None    
+  def setBoardImage(self, source):
+    _api.SetBoardImage(source)
   _twoSided = None
   @staticmethod
   def isTwoSided():
@@ -251,6 +353,7 @@ class Player(object):
     self._hand = Hand(handId, self) if handId != 0 else None
     self._piles = idict((pair.Value, Pile(pair.Key, pair.Value, self)) for pair in _api.PlayerPiles(id))
   def __cmp__(self, other):
+    if other == None: return 1
     return cmp(self._id, other._id)
   def __hash__(self):
     return self._id
@@ -268,6 +371,7 @@ class Player(object):
   def __format__(self, format_spec): return self.name
   @property
   def isActivePlayer(self): return _api.IsActivePlayer(self._id)
+  def setActivePlayer(self): _api.setActivePlayer(self._id)
   @property
   def name(self): return _api.PlayerName(self._id)
   @property
@@ -284,13 +388,21 @@ class Player(object):
   def setGlobalVariable(self,gname,gvalue): 
     _api.PlayerSetGlobalVariable(self._id,gname,gvalue)
 
-_id = _api.LocalPlayerId()
-me = Player(_id) if _id >= 0 else None
+if _api.IsSpectator() == false:
+  _id = _api.LocalPlayerId()
+  me = Player(_id) if _id >= 0 else None
+
 _id = _api.SharedPlayerId()
 shared = Player(_id) if _id >= 0 else None
 del _id
 players = [Player(id) for id in _api.AllPlayers()]
+
+def getPlayers():
+  return [Player(id) for id in _api.AllPlayers()]
+
 table = Table()
 cardProperties = [x.lower() for x in _api.CardProperties()]
 version = _api.OCTGN_Version()
 gameVersion = _api.GameDef_Version()
+def fd():
+  _api.ForceDisconnect()

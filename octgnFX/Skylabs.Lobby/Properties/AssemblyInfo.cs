@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 // General Information about an assembly is controlled through the following 
@@ -19,6 +19,7 @@ using System.Runtime.InteropServices;
 // COM, set the ComVisible attribute to true on that type.
 
 [assembly: ComVisible(false)]
+[assembly: log4net.Config.XmlConfigurator(Watch = true)]
 
 // The following GUID is for the ID of the typelib if this project is exposed to COM
 
@@ -35,5 +36,5 @@ using System.Runtime.InteropServices;
 // by using the '*' as shown below:
 // [assembly: AssemblyVersion("1.0.*")]
 
-[assembly: AssemblyVersion("3.0.0.11")]
-[assembly: AssemblyFileVersion("3.0.0.11")]
+[assembly: AssemblyVersion("3.1.160.353")]
+[assembly: AssemblyFileVersion("3.1.160.353")]

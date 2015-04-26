@@ -9,6 +9,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using Octgn.Data;
+using Octgn.Extentions;
 using Octgn.Utils;
 
 namespace Octgn.Play.Gui
@@ -27,16 +28,19 @@ namespace Octgn.Play.Gui
         private readonly PilePosition _position;
         private int _count;
         private bool _shouldNotifyClose;
+        private bool _shouldShuffleOnClose;
 
         public GroupWindow()
         {
             InitializeComponent();
+            _shouldShuffleOnClose = false;
         }
 
         public GroupWindow(Group group, PilePosition position, int count)
             : this()
         {
-            _id = Program.Game.GetUniqueId();
+            _shouldShuffleOnClose = false;
+            _id = Program.GameEngine.GetUniqueId();
             _position = position;
             _count = count;
             DataContext = _group = group;
@@ -67,7 +71,7 @@ namespace Octgn.Play.Gui
                 shuffleLink.Visibility = Visibility.Collapsed;
 
             // If the whole group is visible to everyone, there's nothing to be done, really.
-            if (group.Visibility == GroupVisibility.Everybody)
+            if (group.Visibility == DataNew.Entities.GroupVisibility.Everybody)
                 return;
 
             SendLookAtRpc(true);
@@ -79,6 +83,12 @@ namespace Octgn.Play.Gui
             if (_shouldNotifyClose)
                 SendLookAtRpc(false);
             ((INotifyCollectionChanged) _group.Cards).CollectionChanged -= CardsChanged;
+            cardsList.Cards = new ObservableCollection<Card>();
+            if (_shouldShuffleOnClose)
+            {
+                var pile = _group as Pile;
+                if (pile != null) pile.Shuffle();
+            }
         }
 
         private void SendLookAtRpc(bool look)
@@ -105,9 +115,8 @@ namespace Octgn.Play.Gui
 
         private void CloseAndShuffleClicked(object sender, RoutedEventArgs e)
         {
+            _shouldShuffleOnClose = true;
             Close();
-            var pile = _group as Pile;
-            if (pile != null) pile.Shuffle();
         }
 
         private void FilterChanged(object sender, TextChangedEventArgs e)
@@ -122,8 +131,8 @@ namespace Octgn.Play.Gui
             }
             else
             {
-                IEnumerable<string> textProperties = Program.Game.Definition.CardDefinition.Properties.Values
-                    .Where(p => p.Type == PropertyType.String && !p.IgnoreText)
+                IEnumerable<string> textProperties = Program.GameEngine.Definition.CustomProperties
+                    .Where(p => p.Type == DataNew.Entities.PropertyType.String && !p.IgnoreText)
                     .Select(p => p.Name);
                 watermark.Visibility = Visibility.Hidden;
                 cardsList.FilterCards = c =>

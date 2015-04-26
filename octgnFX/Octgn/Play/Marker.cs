@@ -1,9 +1,15 @@
 using System;
 using System.ComponentModel;
+using System.Text;
 using Octgn.Data;
 
 namespace Octgn.Play
 {
+    using System.Threading;
+    using System.Threading.Tasks;
+
+    using Octgn.Utils;
+
     public class Marker : INotifyPropertyChanged
     {
         internal static readonly DefaultMarkerModel[] DefaultMarkers = new[]
@@ -51,37 +57,43 @@ namespace Octgn.Play
                                                                            };
 
         private readonly Card _card;
-        private readonly MarkerModel _model;
+        private readonly DataNew.Entities.Marker _model;
         private ushort _count = 1;
 
-        public Marker(Card card, MarkerModel model)
+        public Marker(Card card, DataNew.Entities.Marker model)
         {
             _card = card;
             _model = model;
         }
 
-        public Marker(Card card, MarkerModel model, ushort count)
+        public Marker(Card card, DataNew.Entities.Marker model, ushort count)
             : this(card, model)
         {
             _count = count;
         }
 
-        public MarkerModel Model
+        public DataNew.Entities.Marker Model
         {
             get { return _model; }
         }
+
+        // private readonly CompoundCall setCountNetworkCompoundCall = new CompoundCall();
 
         public ushort Count
         {
             get { return _count; }
             set
             {
-                if (value < _count)
-                    Program.Client.Rpc.RemoveMarkerReq(_card, Model.Id, Model.Name, (ushort) (_count - value));
-                else if (value > _count)
-                    Program.Client.Rpc.AddMarkerReq(_card, Model.Id, Model.Name, (ushort) (value - _count));
-                else
-                    return;
+                int count = _count;
+				//setCountNetworkCompoundCall.Call(()=>
+				//{
+				    var val = value;
+                    if (val < count)
+                        Program.Client.Rpc.RemoveMarkerReq(_card, Model.Id, Model.Name, (ushort)(count - val), (ushort)count,false);
+                    else if (val > count)
+                        Program.Client.Rpc.AddMarkerReq(_card, Model.Id, Model.Name, (ushort)(val - count), (ushort)count,false);
+                //});
+                if (value == _count) return;
                 SetCount(value);
             }
         }
@@ -106,6 +118,8 @@ namespace Octgn.Play
         {
             return Model.Name;
         }
+
+
 
         internal void SetCount(ushort value)
         {

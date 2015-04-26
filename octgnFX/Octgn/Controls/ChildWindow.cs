@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -9,11 +10,17 @@ using System.Windows.Media;
 
 namespace Octgn.Controls
 {
+    using System.Reflection;
+
+    using log4net;
+
     [TemplatePart(Name = "PART_CloseBtn", Type = typeof(Button))]
     [TemplatePart(Name = "PART_MoveThumb", Type = typeof(Thumb))]
     [TemplatePart(Name = "PART_ResizeThumb", Type = typeof(Thumb))]
     public class ChildWindow : ContentControl
     {
+        internal static ILog Log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+
         private static readonly Duration FadeOutDuration = new Duration(TimeSpan.FromMilliseconds(220));
 
         static ChildWindow()
@@ -25,9 +32,17 @@ namespace Octgn.Controls
         public ChildWindow()
         {
             if (DesignerProperties.GetIsInDesignMode(this)) return;
-            RenderTransform = new ScaleTransform();
-            // HACK: This shouldn't be required with the code in the cctor, but I can't get it to work otherwise
-            Style = (Style)FindResource(typeof(ChildWindow));
+            try 
+            {            
+                RenderTransform = new ScaleTransform();
+                // HACK: This shouldn't be required with the code in the cctor, but I can't get it to work otherwise
+                Style = (Style)FindResource(typeof(ChildWindow));
+            }
+            catch(Exception e)
+            {
+                Log.Warn("[Octgn.Controls.ChildWindow]Error", e);
+            }
+
         }
 
         #region Title property
@@ -77,6 +92,7 @@ namespace Octgn.Controls
             fadeOut.Completed += delegate
             {
                 var manager = (ChildWindowManager)Parent;
+                if (manager == null) {return;}
                 manager.Hide(this);
             };
             RenderTransform.BeginAnimation(ScaleTransform.ScaleXProperty, shrink);

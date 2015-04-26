@@ -1,20 +1,21 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Windows;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
-using Octgn.Definitions;
 
 namespace Octgn.Play.Gui
 {
     public partial class CardListControl
     {
         public static readonly DependencyProperty IsAlwaysUpProperty =
-            DependencyProperty.Register("IsAlwaysUp", typeof (bool), typeof (CardListControl),
+            DependencyProperty.Register("IsAlwaysUp", typeof(bool), typeof(CardListControl),
                                         new UIPropertyMetadata(false));
 
         private ObservableCollection<Card> _cards;
@@ -31,7 +32,7 @@ namespace Octgn.Play.Gui
 
         public bool IsAlwaysUp
         {
-            get { return (bool) GetValue(IsAlwaysUpProperty); }
+            get { return (bool)GetValue(IsAlwaysUpProperty); }
             set { SetValue(IsAlwaysUpProperty, value); }
         }
 
@@ -51,7 +52,7 @@ namespace Octgn.Play.Gui
             set
             {
                 _filterCards = value;
-                _view.Filter = value == null ? (Predicate<object>) null : o => _filterCards((Card) o);
+                _view.Filter = value == null ? (Predicate<object>)null : o => _filterCards((Card)o);
                 _view.Refresh();
             }
         }
@@ -70,7 +71,7 @@ namespace Octgn.Play.Gui
                     if (value)
                     {
                         _view.CustomSort = IsAlwaysUp
-                                               ? (IComparer) new Card.RealNameComparer()
+                                               ? (IComparer)new Card.RealNameComparer()
                                                : new Card.NameComparer();
                         if (_view.GroupDescriptions != null)
                             _view.GroupDescriptions.Add(new PropertyGroupDescription(IsAlwaysUp ? "RealName" : "Name"));
@@ -86,14 +87,19 @@ namespace Octgn.Play.Gui
 
         private void SaveWrapPanel(object sender, RoutedEventArgs e)
         {
-            _wrapPanel = (WrapPanel) sender;
+            _wrapPanel = (WrapPanel)sender;
             _wrapPanel.AdornerLayerVisual = scroller; // So that adorners are not clipped by the scrollviewer
             _wrapPanel.ClippingVisual = scroller; // but rather with the better suited InsertAdorner clipping behavior
         }
 
-        internal override void ShowContextMenu(Card card, bool showGroupActions = true)
+        //internal override void ShowContextMenu(Card card, bool showGroupActions = true)
+        //{
+        //    // Don't show the group context menu in card lists.
+        //}
+
+        public override bool ExecuteDefaultGroupAction()
         {
-            // Don't show the group context menu in card lists.
+            return false;
         }
 
         #region Card DnD
@@ -110,8 +116,11 @@ namespace Octgn.Play.Gui
             base.OnCardOver(sender, e);
 
             // Set overlay card size
-            CardDef cardDef = Program.Game.Definition.CardDefinition;
-            e.CardSize = new Size(cardDef.Width*100/cardDef.Height, 100);
+			for(var i = 0;i<e.Cards.Length;i++)
+            {
+                e.CardSizes[i] = new Size(e.Cards[i].Size.Width * 100 / e.Cards[i].Size.Height, 100);
+            }
+            //e.CardSize = new Size(Program.GameEngine.Definition.DefaultSize.Width * 100 / Program.GameEngine.Definition.DefaultSize.Height, 100);
             if (IsAlwaysUp) e.FaceUp = true;
 
             // Drop is forbidden when not ordered by position
@@ -130,7 +139,7 @@ namespace Octgn.Play.Gui
             }
 
             // Display insert indicator
-            _wrapPanel.DisplayInsertIndicator(e.ClickedCard, _wrapPanel.GetIndexFromPoint(Mouse.GetPosition(_wrapPanel)));
+            _wrapPanel.DisplayInsertIndicator(e.ClickedCard, _wrapPanel.GetIndexFromPoint(e.ClickedCard, Mouse.GetPosition(_wrapPanel)));
 
             // Scroll the scroll viewer if required
             double pos = Mouse.GetPosition(scroller).Y;
@@ -140,7 +149,7 @@ namespace Octgn.Play.Gui
                 {
                     _scrollSpeed = ScrollInitialSpeed;
                     _scrollDirectionUp = pos <= ScrollMargin;
-                    _scrollTimer = new DispatcherTimer {Interval = TimeSpan.FromMilliseconds(ScrollTimeInterval)};
+                    _scrollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ScrollTimeInterval) };
                     _scrollTimer.Tick += DragScroll;
                     _scrollTimer.Start();
                 }
@@ -171,30 +180,37 @@ namespace Octgn.Play.Gui
             StopDragScroll();
             e.Handled = e.CanDrop = true;
             if (!@group.TryToManipulate()) return;
-            int idx = _wrapPanel.GetIndexFromPoint(Mouse.GetPosition(_wrapPanel));
-
+            int idx = _wrapPanel.GetIndexFromPoint(e.ClickedCard, Mouse.GetPosition(_wrapPanel));
+			Trace.WriteLine("Index: " + idx);
             // When the list is restricted, real index may be different from index in the GUI
             if (RestrictDrop)
             {
                 Card c = null;
                 bool after = false;
                 if (idx < _view.Count)
-                    c = (Card) _view.GetItemAt(idx);
+                    c = (Card)_view.GetItemAt(idx);
                 else if (_view.Count > 0)
                 {
-                    c = (Card) _view.GetItemAt(_view.Count - 1);
+                    c = (Card)_view.GetItemAt(_view.Count - 1);
                     after = true;
                 }
 
                 if (c != null) idx = @group.Cards.IndexOf(c) + (after ? 1 : 0);
             }
 
-            foreach (Card c in e.Cards)
+            var cards = e.Cards.ToArray();
+            var idxs = new int[cards.Length];
+            var fups = new bool[cards.Length];
+            for (var i = 0; i < cards.Length; i++)
             {
+                var c = cards[i];
                 // Fix the target index if the card is already in the group at a lower index
                 if (c.Group == @group && c.GetIndex() < idx) --idx;
-                c.MoveTo(@group, e.FaceUp != null && e.FaceUp.Value, idx++);
+                idxs[i] = idx;
+                idx++;
+                fups[i] = e.FaceUp ?? false;
             }
+            Card.MoveCardsTo(@group, cards, fups, idxs, false);
         }
 
         #endregion
@@ -216,9 +232,9 @@ namespace Octgn.Play.Gui
             if (!scroller.IsLoaded) return;
             scroller.ScrollToVerticalOffset(scroller.VerticalOffset +
                                             (_scrollDirectionUp
-                                                 ? -_scrollSpeed*ScrollTimeInterval
-                                                 : _scrollSpeed*ScrollTimeInterval));
-            _scrollSpeed = Math.Min(ScrollMaxSpeed, _scrollSpeed + ScrollAcceleration*ScrollTimeInterval);
+                                                 ? -_scrollSpeed * ScrollTimeInterval
+                                                 : _scrollSpeed * ScrollTimeInterval));
+            _scrollSpeed = Math.Min(ScrollMaxSpeed, _scrollSpeed + ScrollAcceleration * ScrollTimeInterval);
         }
 
         private void StopDragScroll()
@@ -235,7 +251,7 @@ namespace Octgn.Play.Gui
         private static readonly Duration SmoothScrollDuration = TimeSpan.FromMilliseconds(500);
 
         private static readonly DependencyProperty AnimatableVerticalOffsetProperty =
-            DependencyProperty.Register("AnimatableVerticalOffset", typeof (double), typeof (CardListControl),
+            DependencyProperty.Register("AnimatableVerticalOffset", typeof(double), typeof(CardListControl),
                                         new UIPropertyMetadata(0.0, AnimatableVerticalOffsetChanged));
 
         private DoubleAnimation _scrollAnimation;
@@ -244,7 +260,7 @@ namespace Octgn.Play.Gui
 
         private double AnimatableVerticalOffset
         {
-            get { return (double) GetValue(AnimatableVerticalOffsetProperty); }
+            get { return (double)GetValue(AnimatableVerticalOffsetProperty); }
             set { SetValue(AnimatableVerticalOffsetProperty, value); }
         }
 
@@ -252,7 +268,7 @@ namespace Octgn.Play.Gui
                                                             DependencyPropertyChangedEventArgs e)
         {
             var ctrl = sender as CardListControl;
-            if (ctrl != null) ctrl.scroller.ScrollToVerticalOffset((double) e.NewValue);
+            if (ctrl != null) ctrl.scroller.ScrollToVerticalOffset((double)e.NewValue);
         }
 
         private void SmoothScroll(object sender, MouseWheelEventArgs e)
@@ -260,7 +276,7 @@ namespace Octgn.Play.Gui
             e.Handled = true;
             // Add inerita to scrolling for a very smooth effect      
             int sign = Math.Sign(e.Delta);
-            double offset = -sign*48.0;
+            double offset = -sign * 48.0;
             if (sign == _scrollDirection)
                 _scrollTarget += offset;
             else
@@ -276,7 +292,7 @@ namespace Octgn.Play.Gui
 
         private void EnsureScrollAnimation()
         {
-            _scrollAnimation = new DoubleAnimation {Duration = SmoothScrollDuration, DecelerationRatio = 0.5};
+            _scrollAnimation = new DoubleAnimation { Duration = SmoothScrollDuration, DecelerationRatio = 0.5 };
             _scrollAnimation.Completed += delegate
                                               {
                                                   _scrollAnimation = null;

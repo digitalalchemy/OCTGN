@@ -1,37 +1,44 @@
+!include "MUI.nsh"
+!include "nsDialogs.nsh"
+!include "WinVer.nsh"
 !include "LogicLib.nsh"
 !include "DotNetVer.nsh"
 !include "GetDotNet.nsh"
+!include "GetVC.nsh"
+!include "WarningXpPage.nsdinc"
 
-Name "OCTGN 3.0"
-OutFile "OCTGN Setup.exe"
+Name "OCTGN 3.1.160.353"
+OutFile "OCTGN-Setup-3.1.160.353.exe"
 ShowInstDetails show
 LoadLanguageFile "${NSISDIR}\Contrib\Language files\English.nlf"
 
 ; Version Information
-VIProductVersion "1.0.0.0"
+VIProductVersion "3.1.160.353"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductName" "OCTGN"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "Comments" "A tabletop engine"
-VIAddVersionKey /LANG=${LANG_ENGLISH} "CompanyName" "Skylabs"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "CompanyName" "OCTGN"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalTrademarks" ""
 VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalCopyright" ""
-VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "OCTGN release 1"
-VIAddVersionKey /LANG=${LANG_ENGLISH} "FileVersion" "3.0"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "OCTGN release 3"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "FileVersion" "3.1.160.353"
 
 ; Make plugin directory same as script
 !addplugindir .
 
 ; Installation directory
-InstallDir $PROGRAMFILES\OCTGN
+InstallDir $DOCUMENTS\OCTGN\OCTGN
 
 ; Create registry key for installation directory
-InstallDirRegKey HKCU "Software\OCTGN" "Install_Dir"
+; CHANGE THIS BACK AFTER THIS RELEASE
+;InstallDirRegKey HKCU "Software\OCTGN" "Install_Dir"
 
 ; Request application privileges for Windows Vista
-RequestExecutionLevel admin
+RequestExecutionLevel user
 
 ;Pages
+;Page custom fnc_WarningXpPage_Show
 Page components
-Page directory
+;Page directory
 Page instfiles
 
 UninstPage uninstConfirm
@@ -39,12 +46,38 @@ UninstPage instfiles
 
 ; DotNet Checkup and Install
 Section ""
-  ${If} ${HasDotNet4.0}
-    DetailPrint "Microsoft .NET Framework 4.0 installed."
-  ${Else}
-    DetailPrint "Microsoft .NET Framework 4.0 missing."
-    !insertmacro GetDotNet
-  ${EndIf}
+  ;${IfNot} ${AtLeastWinVista}
+    ${If} ${DOTNETVER_4_0} HasDotNetFullProfile 1
+      DetailPrint "Microsoft .NET Framework 4.0 available."
+    ${Else}
+      DetailPrint "Microsoft .NET Framework 4.0 missing."
+      !insertmacro GetDotNet
+    ${EndIf}
+  ;${Else}
+    ; Magic numbers from http://msdn.microsoft.com/en-us/library/ee942965.aspx
+   ; ClearErrors
+    ;ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" "Release"
+
+    ;IfErrors NotDetected
+
+    ;${If} $0 >= 378389
+
+        ;DetailPrint "Microsoft .NET Framework 4.5 is installed ($0)"
+    ;${Else}
+    ;NotDetected:
+        ;DetailPrint "Installing Microsoft .NET Framework 4.5"
+        ;SetDetailsPrint listonly
+        ;ExecWait '"$INSTDIR\Tools\dotNetFx45_Full_setup.exe" /passive /norestart' $0
+        ;${If} $0 == 3010 
+        ;${OrIf} $0 == 1641
+            ;DetailPrint "Microsoft .NET Framework 4.5 installer requested reboot"
+            ;SetRebootFlag true
+        ;${EndIf}
+        ;SetDetailsPrint lastused
+        ;DetailPrint "Microsoft .NET Framework 4.5 installer returned $0"
+    ;${EndIf}
+  ;${EndIf}
+  !insertmacro GetVC++
 SectionEnd
  
 ; Start default section
@@ -60,7 +93,7 @@ Section "Main"
   WriteUninstaller "$INSTDIR\uninstall.exe"
  
   ; set folder and files to be included in setup
-  File /r ..\octgnFX\OCTGN\bin\x86\Release\*.*
+  File /r ..\octgnFX\OCTGN\bin\Release\*.*
 SectionEnd
 
 Section "Start Menu Shortcuts"
@@ -68,11 +101,16 @@ Section "Start Menu Shortcuts"
   CreateDirectory "$SMPROGRAMS\OCTGN"  
   CreateShortCut "$SMPROGRAMS\OCTGN\Uninstall.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
   CreateShortCut "$SMPROGRAMS\OCTGN\OCTGN.lnk" "$INSTDIR\OCTGN.exe" "" "$INSTDIR\OCTGN.exe" 0
+  CreateShortCut "$SMPROGRAMS\OCTGN\Octide.lnk" "$INSTDIR\Octide\Octide.exe" "" "$INSTDIR\Octide\Octide.exe" 0
 SectionEnd
 
 Section ""
   ; Run hash program
   ExecWait '"$INSTDIR\HashGenCLI.exe"' $0
+SectionEnd
+
+Section "Launch OCTGN"
+Exec "$INSTDIR\OCTGN.exe"
 SectionEnd
  
 Section "Uninstall" 

@@ -35,24 +35,34 @@ namespace Octgn.Play.Actions
         private void SingleTarget()
         {
             FromCard.SetTargetedBy(Who);
-            Program.Trace.TraceEvent(TraceEventType.Information, EventIds.Event | EventIds.PlayerFlag(Who),
-                                     "{0} targets '{1}'", Who, FromCard);
+            Program.GameEngine.EventProxy.OnTargetCard_3_1_0_0(Who, FromCard, true);
+            Program.GameEngine.EventProxy.OnTargetCard_3_1_0_1(Who, FromCard, true);
+            Program.GameMess.PlayerEvent(Who, "targets '{0}'", FromCard);
         }
 
         private void ArrowTarget()
         {
             if (CreatingArrow != null) CreatingArrow(this, EventArgs.Empty);
-            Program.Trace.TraceEvent(TraceEventType.Information, EventIds.Event | EventIds.PlayerFlag(Who),
-                                     "{0} targets '{2}' with '{1}'", Who, FromCard, ToCard);
+            Program.GameEngine.EventProxy.OnTargetCardArrow_3_1_0_0(Who, FromCard, ToCard, true);
+            Program.GameEngine.EventProxy.OnTargetCardArrow_3_1_0_1(Who, FromCard, ToCard, true);
+            Program.GameMess.PlayerEvent(Who,"targets '{1}' with '{0}'", FromCard, ToCard);
         }
 
         private void ClearTarget()
         {
             if (FromCard.TargetsOtherCards && DeletingArrows != null)
+            {
                 DeletingArrows(this, EventArgs.Empty);
+                Program.GameEngine.EventProxy.OnTargetCardArrow_3_1_0_0(Who, FromCard, ToCard, false);
+                Program.GameEngine.EventProxy.OnTargetCardArrow_3_1_0_1(Who, FromCard, ToCard, false);
+            }
 
             if (FromCard.TargetedBy != null)
+            {
                 FromCard.SetTargetedBy(null);
+                Program.GameEngine.EventProxy.OnTargetCard_3_1_0_0(Who, FromCard, false);
+                Program.GameEngine.EventProxy.OnTargetCard_3_1_0_1(Who, FromCard, false);
+            }
         }
     }
 }

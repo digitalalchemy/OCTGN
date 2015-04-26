@@ -6,11 +6,12 @@ using System.Linq;
 using System.Windows.Documents;
 using System.Windows.Input;
 using Octgn.Controls;
-using Octgn.Definitions;
-using Octgn.Utils;
+using Octgn.Extentions;
 
 namespace Octgn.Play
 {
+    using Octgn.DataNew.Entities;
+
     public abstract class Group : ControllableObject, IEnumerable<Card>
     {
         #region Non-public fields
@@ -19,16 +20,12 @@ namespace Octgn.Play
 
         // List of cards in this group        
 
-        internal GroupDef Def;
-        internal int FilledShuffleSlots;
-        internal bool HasReceivedFirstShuffledMessage;
+        internal DataNew.Entities.Group Def;
 
         // when a group is locked, one cannot manipulate it anymore (e.g. during shuffles and other non-atomic actions)
 
         internal Dictionary<int, List<Card>> LookedAt = new Dictionary<int, List<Card>>();
         // Cards being looked at, key is a unique identifier for each "look"; Note: cards may have left the group in the meantime, which is not important
-
-        internal short[] MyShufflePos; // Stores positions suggested by this client during a shuffle [transient]
 
         internal List<Player> Viewers = new List<Player>(2);
         private bool _locked;
@@ -47,7 +44,7 @@ namespace Octgn.Play
         public readonly ActionShortcut[] CardShortcuts;
         public readonly ActionShortcut[] GroupShortcuts;
 
-        internal Group(Player owner, GroupDef def)
+        internal Group(Player owner, DataNew.Entities.Group def)
             : base(owner)
         {
             Def = def;
@@ -58,7 +55,7 @@ namespace Octgn.Play
                 MoveToShortcut = (KeyGesture) KeyConverter.ConvertFromInvariantString(def.Shortcut);
         }
 
-        public GroupDef Definition
+        public DataNew.Entities.Group Definition
         {
             get { return Def; }
         }
@@ -75,6 +72,10 @@ namespace Octgn.Play
         internal GroupVisibility Visibility
         {
             get { return visibility; }
+			set
+			{
+			    visibility = value;
+			}
         }
 
         // Is this group ordered ?
@@ -91,19 +92,36 @@ namespace Octgn.Play
         // Get a card in the group
         public Card this[int idx]
         {
-            get { return cards[idx]; }
+            get
+            {
+                lock (cards)
+                {
+                    if (cards.Count == 0) 
+                        return null;
+                    return cards[idx];
+                }
+            }
         }
 
         public int Count
         {
-            get { return cards.Count; }
+            get
+            {
+				lock(cards)
+					return cards.Count;
+            }
+        }
+
+        public virtual void OnCardsChanged()
+        {
+
         }
 
         internal new static Group Find(int id)
         {
-            if (id == 0x01000000) return Program.Game.Table;
+            if (id == 0x01000000) return Program.GameEngine.Table;
             Player player = Player.Find((byte) (id >> 16));
-            return player.IndexedGroups[(byte) id];
+            return player.IndexedGroups[(byte) id - 1];
         }
 
         // Add a card to the group
@@ -120,15 +138,48 @@ namespace Octgn.Play
 
             // Add the card to the group
             card.Group = this;
-            cards.Insert(idx, card);
+            lock (cards)
+            {
+                if (idx < 0 || (cards.Count == 0 && idx != 0) || (cards.Count > 0 && idx > cards.Count))
+                {
+                    Program.GameMess.Warning("Can't add card at index {0}, there is not a free slot there.", idx);
+                    return;
+                }
+                cards.Insert(idx, card);
+            }
+            OnCardsChanged();
+        }
+
+        public void Add(Card card)
+        {
+            // Restore default orientation
+            card.SetOrientation(CardOrientation.Rot0);
+
+            // Set the card controllers
+            CopyControllersTo(card);
+
+            // Assign default visibility
+            card.SetVisibility(visibility, Viewers);
+
+            // Add the card to the group
+            card.Group = this;
+            lock (cards)
+            {
+                if (this.cards.Any(x => x.Id == card.Id) == false) cards.Add(card);
+            }
+            OnCardsChanged();
         }
 
         // Remove a card from the group
         public void Remove(Card card)
         {
-            if (!cards.Contains(card)) return;
-            cards.Remove(card);
-            card.Group = null;
+            lock (cards)
+            {
+                if (!cards.Contains(card)) return;
+                cards.Remove(card);
+                card.Group = null;
+            }
+            OnCardsChanged();
         }
 
         public override string ToString()
@@ -139,12 +190,6 @@ namespace Octgn.Play
         #endregion
 
         #region Implementation
-
-        // True if a UnaliasGrp message was received
-        internal bool PreparingShuffle;
-
-        // True if the localPlayer is the one who wants to shuffle        
-        internal bool WantToShuffle;
 
         // Get the Id of this group
         internal override int Id
@@ -165,19 +210,18 @@ namespace Octgn.Play
         }
 
         internal event EventHandler<ShuffleTraceEventArgs> ShuffledTrace;
-        internal event EventHandler Shuffled;
 
-        private static ActionShortcut[] CreateShortcuts(IEnumerable<BaseActionDef> baseActionDef)
+        private static ActionShortcut[] CreateShortcuts(IEnumerable<IGroupAction> baseActionDef)
         {
             if (baseActionDef == null) return new ActionShortcut[0];
 
-            IEnumerable<ActionDef> actionDef = baseActionDef
+            IEnumerable<GroupAction> actionDef = baseActionDef
                 .Flatten(x =>
                              {
-                                 var y = x as ActionGroupDef;
+                                 var y = x as GroupActionGroup;
                                  return y == null ? null : y.Children;
                              })
-                .OfType<ActionDef>();
+                .OfType<GroupAction>();
 
             IEnumerable<ActionShortcut> shortcuts = from action in actionDef
                                                     where action.Shortcut != null
@@ -194,22 +238,9 @@ namespace Octgn.Play
 
         protected override void OnControllerChanged()
         {
-            foreach (Card c in cards) CopyControllersTo(c);
-        }
-
-        internal override bool CanManipulate()
-        {
-            return !WantToShuffle && base.CanManipulate();
-        }
-
-        internal override bool TryToManipulate()
-        {
-            if (WantToShuffle)
-            {
-                Tooltip.PopupError("Wait until shuffle completes.");
-                return false;
-            }
-            return base.TryToManipulate();
+			lock(cards)
+				foreach (Card c in cards) CopyControllersTo(c);
+            OnCardsChanged();
         }
 
         internal override void NotControlledError()
@@ -244,8 +275,12 @@ namespace Octgn.Play
                 Viewers.Clear();
             }
 
-            foreach (Card c in cards.Where(c => !c.OverrideGroupVisibility))
-                c.SetVisibility(visibility, Viewers);
+            lock (cards)
+            {
+                foreach (Card c in cards.Where(c => !c.OverrideGroupVisibility)) 
+                    c.SetVisibility(visibility, Viewers);
+            }
+            OnCardsChanged();
         }
 
         internal void AddViewer(Player player, bool notifyServer)
@@ -260,8 +295,12 @@ namespace Octgn.Play
                 Program.Client.Rpc.GroupVisAddReq(this, player);
             visibility = GroupVisibility.Custom;
             Viewers.Add(player);
-            foreach (Card c in cards.Where(c => !c.OverrideGroupVisibility))
-                c.SetVisibility(visibility, Viewers);
+            lock (cards)
+            {
+                foreach (Card c in cards.Where(c => !c.OverrideGroupVisibility))
+                    c.SetVisibility(visibility, Viewers);
+                
+            } OnCardsChanged();
         }
 
         internal void RemoveViewer(Player player, bool notifyServer)
@@ -272,8 +311,13 @@ namespace Octgn.Play
             Viewers.Remove(player);
             visibility = Viewers.Count == 0 ? GroupVisibility.Nobody : GroupVisibility.Custom;
             if (player == Player.LocalPlayer)
-                foreach (Card c in cards)
-                    c.SetFaceUp(false);
+                lock (cards)
+                {
+                    foreach (Card c in cards)
+                        c.SetFaceUp(false);
+                    
+                } 
+            OnCardsChanged();
         }
 
         internal void OnShuffled()
@@ -282,7 +326,10 @@ namespace Octgn.Play
             foreach (List<Card> list in LookedAt.Values)
                 list.Clear();
             foreach (Card c in Cards)
+            {
                 c.PlayersLooking.Clear();
+                c.PeekingPlayers.Clear();
+            }
 
             // Notify trace event listeners
             var shuffledArgs = new ShuffleTraceEventArgs {TraceNotification = true};
@@ -290,31 +337,32 @@ namespace Octgn.Play
                 ShuffledTrace(this, shuffledArgs);
             // Trace if required
             if (shuffledArgs.TraceNotification)
-                Program.TracePlayerEvent(Owner, "{0} is shuffled", FullName);
-
-            WantToShuffle = Locked = false;
-
-            // Notify completion (e.g. to resume scripts execution)
-            if (Shuffled != null)
-                Shuffled(this, EventArgs.Empty);
+                Program.GameMess.PlayerEvent(Owner, "shuffled {0}", FullName);
+            OnCardsChanged();
         }
 
         internal void SetCardIndex(Card card, int idx)
         {
-            int currentIdx = cards.IndexOf(card);
-            if (currentIdx == idx || currentIdx == -1) return;
-            if (idx >= cards.Count) idx = cards.Count - 1;
-            cards.Move(currentIdx, idx);
+            lock (cards)
+            {
+                int currentIdx = cards.IndexOf(card);
+                if (currentIdx == idx || currentIdx == -1) return;
+                if (idx >= cards.Count) idx = cards.Count - 1;
+                cards.Move(currentIdx, idx);
+            }
+            OnCardsChanged();
         }
 
         internal int GetCardIndex(Card card)
         {
-            return cards.IndexOf(card);
+			lock(cards)
+				return cards.IndexOf(card);
         }
 
         internal Card FindByCardIdentity(CardIdentity identity)
         {
-            return cards.FirstOrDefault(c => c.Type == identity);
+			lock(cards)
+				return cards.FirstOrDefault(c => c.Type == identity);
         }
 
         private void ResetVisibility()
@@ -327,6 +375,7 @@ namespace Octgn.Play
             }
             else
                 visibility = Def.Visibility;
+            OnCardsChanged();
         }
 
         // Hard-reset: removes all cards from this group, without destroying them
@@ -334,14 +383,18 @@ namespace Octgn.Play
         {
             cards.Clear();
             ResetVisibility();
+            OnCardsChanged();
         }
 
         internal int FindNextFreeSlot(int slot)
         {
-            for (int i = slot + 1; i != slot; ++i)
+            lock (cards)
             {
-                if (i >= cards.Count) i = 0;
-                if (cards[i].Type == null) return i;
+                for (int i = slot + 1; i != slot; ++i)
+                {
+                    if (i >= cards.Count) i = 0;
+                    if (cards[i].Type == null) return i;
+                }
             }
             throw new InvalidOperationException("There's no more free slot!");
         }
@@ -385,6 +438,6 @@ namespace Octgn.Play
     public class ActionShortcut
     {
         public KeyGesture Key { get; set; }
-        public ActionDef ActionDef { get; set; }
+        public IGroupAction ActionDef { get; set; }
     }
 }

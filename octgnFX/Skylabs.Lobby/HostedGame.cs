@@ -1,13 +1,17 @@
 ﻿using System;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
-using Skylabs.Lobby;
+using System.Reflection;
+using log4net;
+using Octgn.Library;
 
 namespace Skylabs.Lobby
 {
+    using System.Collections.Generic;
+
     public class HostedGame : IEquatable<HostedGame>
     {
+        internal static ILog Log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
         /// <summary>
         ///   Host a game.
         /// </summary>
@@ -17,7 +21,10 @@ namespace Skylabs.Lobby
         /// <param name="name"> Name of the room </param>
         /// <param name="password"> Password for the game </param>
         /// <param name="hoster"> User hosting the game </param>
-        public HostedGame(int port, Guid gameguid, Version gameversion, string name, string password, NewUser hoster, bool localGame = false)
+        public HostedGame(int port, Guid gameguid, Version gameversion, string gameName, string gameIconUrl, string name, string password
+            , User hoster, bool allowSpecators, bool localGame = false, bool isOnServer = false
+            , Guid id = new Guid(),
+            int broadcastPort = 21234, Version sasVersion = null)
         {
             GameLog = "";
             GameGuid = gameguid;
@@ -25,46 +32,75 @@ namespace Skylabs.Lobby
             Name = name;
             Password = password;
             Hoster = hoster;
-            Status = Lobby.EHostedGame.StoppedHosting;
+            Status = EHostedGame.StoppedHosting;
             Port = port;
             TimeStarted = new DateTime(0);
             LocalGame = localGame;
-            StandAloneApp = new Process();
-            StandAloneApp.StartInfo.FileName = Directory.GetCurrentDirectory() + "/Octgn.StandAloneServer.exe";
-            StandAloneApp.StartInfo.Arguments = "-g=" + GameGuid + " -v=" + GameVersion + " -p=" +
-                                                Port.ToString(CultureInfo.InvariantCulture);
-#if(DEBUG || TestServer)
-#else
-            if(!LocalGame)
+            GameName = gameName;
+            GameIconUrl = gameIconUrl;
+
+            var atemp = new List<string>();
+            this.Id = id;
+            atemp.Add("-id=" + Id.ToString());
+            atemp.Add("-name=\"" + name + "\"");
+            atemp.Add("-hostusername=\"" + hoster.UserName + "\"");
+            atemp.Add("-gamename=\"" + gameName + "\"");
+            atemp.Add("-gameid=" + gameguid);
+            atemp.Add("-gameversion=" + gameversion);
+            atemp.Add("-bind=" + "0.0.0.0:" + port.ToString());
+            atemp.Add("-password=" + password);
+            atemp.Add("-broadcastport=" + broadcastPort);
+			if(!string.IsNullOrWhiteSpace(GameIconUrl))
+                atemp.Add("-gameiconurl=" + GameIconUrl);
+            if (Hoster.ApiUser != null && !string.IsNullOrWhiteSpace(Hoster.ApiUser.IconUrl))
+                atemp.Add("-usericonurl=" + Hoster.ApiUser.IconUrl);
+			if(allowSpecators)
+				atemp.Add("-spectators");
+            if (localGame)
+                atemp.Add("-local");
+
+            // ReSharper disable HeuristicUnreachableCode
+            var path = "";
+            // Get file path
+            if (X.Instance.Debug || X.Instance.TestServer)
             {
-            StandAloneApp.StartInfo.FileName = "/opt/mono-2.10/bin/mono";
-            StandAloneApp.StartInfo.Arguments = Directory.GetCurrentDirectory() + "/Octgn.StandAloneServer.exe -g=" +
-                                                GameGuid + " -v=" + GameVersion + " -p=" +
-                                                Port.ToString(CultureInfo.InvariantCulture);
+                path = Path.Combine(Directory.GetCurrentDirectory(), @"..\..\..\Octgn.Online.StandAloneServer\bin\Debug\Octgn.Online.StandAloneServer.exe");
+                path = Path.GetFullPath(path);
+            }
+            else
+            {
+                if (isOnServer)
+                {
+                    path = Path.Combine("c:\\Server\\sas",sasVersion.ToString(),"Octgn.Online.StandAloneServer.exe");
+                }
+                else
+                {
+                    path = Directory.GetCurrentDirectory() + "\\Octgn.Online.StandAloneServer.exe";
+                }
+            }
+            // ReSharper restore HeuristicUnreachableCode
+
+
+            StandAloneApp = new Process();
+            StandAloneApp.StartInfo.Arguments = String.Join(" ", atemp);
+            StandAloneApp.StartInfo.FileName = path;
+
+            if (X.Instance.Debug || X.Instance.TestServer)
+            {
+                StandAloneApp.StartInfo.UseShellExecute = true;
+                StandAloneApp.StartInfo.CreateNoWindow = true;
+            }
+            else
+            {
+                StandAloneApp.StartInfo.CreateNoWindow = true;
+                StandAloneApp.StartInfo.UseShellExecute = false;
             }
 
-#endif
-
-            StandAloneApp.StartInfo.RedirectStandardOutput = true;
-            StandAloneApp.StartInfo.RedirectStandardInput = true;
-            StandAloneApp.StartInfo.RedirectStandardError = true;
-            StandAloneApp.StartInfo.UseShellExecute = false;
-            StandAloneApp.StartInfo.CreateNoWindow = true;
             StandAloneApp.Exited += StandAloneAppExited;
-            StandAloneApp.ErrorDataReceived += new DataReceivedEventHandler(StandAloneAppOnErrorDataReceived);
-            StandAloneApp.OutputDataReceived += new DataReceivedEventHandler(StandAloneAppOnOutputDataReceived);
             StandAloneApp.EnableRaisingEvents = true;
         }
 
-        private void StandAloneAppOnOutputDataReceived(object sender, DataReceivedEventArgs dataReceivedEventArgs)
-        {
-            GameLog += dataReceivedEventArgs.Data + Environment.NewLine;
-        }
-
-        private void StandAloneAppOnErrorDataReceived(object sender, DataReceivedEventArgs dataReceivedEventArgs)
-        {
-            GameLog += dataReceivedEventArgs.Data + Environment.NewLine;
-        }
+        public Guid Id { get; private set; }
 
         /// <summary>
         ///   Games GUID. Based on the GameDefinitionFiles.
@@ -92,6 +128,13 @@ namespace Skylabs.Lobby
         public String Name { get; private set; }
 
         /// <summary>
+        /// Name of the actual game
+        /// </summary>
+        public string GameName { get; private set; }
+
+        public string GameIconUrl { get; private set; }
+
+        /// <summary>
         ///   Password for the hosted game.
         /// </summary>
         public String Password { get; private set; }
@@ -104,12 +147,12 @@ namespace Skylabs.Lobby
         /// <summary>
         ///   Hoster of this crazy game.
         /// </summary>
-        public NewUser Hoster { get; private set; }
+        public User Hoster { get; private set; }
 
         /// <summary>
         ///   The status of the hosted game.
         /// </summary>
-        public Lobby.EHostedGame Status { get; set; }
+        public EHostedGame Status { get; set; }
 
         public DateTime TimeStarted { get; private set; }
 
@@ -144,20 +187,20 @@ namespace Skylabs.Lobby
             }
         }
 
-        public bool StartProcess()
+        public bool StartProcess(bool throwException = false)
         {
-            Status = Lobby.EHostedGame.StoppedHosting;
+            Status = EHostedGame.StoppedHosting;
             try
             {
                 StandAloneApp.Start();
-                StandAloneApp.BeginErrorReadLine();
-                StandAloneApp.BeginOutputReadLine();
-                Status = Lobby.EHostedGame.StartedHosting;
+                Status = EHostedGame.StartedHosting;
                 TimeStarted = new DateTime(DateTime.Now.ToUniversalTime().Ticks);
                 return true;
             }
             catch (Exception e)
             {
+                if (throwException)
+                    throw;
                 Console.WriteLine("");
                 Console.WriteLine(StandAloneApp.StartInfo.FileName);
                 Console.WriteLine(StandAloneApp.StartInfo.Arguments);
@@ -174,9 +217,10 @@ namespace Skylabs.Lobby
         /// <param name="e"> Jesus </param>
         private void StandAloneAppExited(object sender, EventArgs e)
         {
+            StandAloneApp.Exited -= StandAloneAppExited;
             if (HostedGameDone != null)
-                HostedGameDone(this, e);
-            Console.WriteLine("Game Log[{0}]{1}{2}End Game Log[{0}]",Port,Environment.NewLine,GameLog);
+                HostedGameDone.Invoke(this, e);
+            Console.WriteLine("Game Log[{0}]{1}{2}End Game Log[{0}]", Port, Environment.NewLine, GameLog);
         }
     }
 }

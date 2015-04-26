@@ -1,111 +1,298 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
-using System.Text;
 using System.Windows;
-using Octgn.Data;
-using Octgn.Launcher;
+using Exceptionless;
+using log4net.Repository.Hierarchy;
+using Octgn.Library;
+using System.Runtime.InteropServices;
+using System.Windows.Markup;
+using System.Windows.Threading;
+using Octgn.Core;
+using Octgn.Core.Util;
+using Octgn.Library.Exceptions;
+
+using log4net;
+
+using Octgn.Play;
+using Octgn.Utils;
+using Octgn.Windows;
 
 namespace Octgn
 {
+
     public partial class OctgnApp
     {
-        internal const string ClientName = "Octgn.NET";
-        internal static readonly Version OctgnVersion = GetClientVersion();
-        internal static readonly Version BackwardCompatibility = new Version(0, 2, 0, 0);
-
-        private static Version GetClientVersion()
-        {
-            Assembly asm = typeof (OctgnApp).Assembly;
-            //var at = (AssemblyProductAttribute) asm.GetCustomAttributes(typeof (AssemblyProductAttribute), false)[0];
-            return asm.GetName().Version;
-        }
+        // Need this to load Octgn.Core for the logger
+        internal static BigInteger bi = new BigInteger(12);
+        internal static ILog Log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
 
         protected override void OnStartup(StartupEventArgs e)
         {
-            base.OnStartup(e);
-#if(!DEBUG)
-            AppDomain.CurrentDomain.UnhandledException += CurrentDomainUnhandledException;
-#endif
-            //AppDomain.CurrentDomain.FirstChanceException += new EventHandler<System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs>(CurrentDomain_FirstChanceException);
-            Program.GamesRepository = new GamesRepository();
+            // Need this to load Octgn.Core for the logger
+            Debug.WriteLine(bi);
+            GlobalContext.Properties["version"] = Const.OctgnVersion;
+            GlobalContext.Properties["os"] = Environment.OSVersion.ToString();
+            AppDomain.CurrentDomain.AssemblyLoad += CurrentDomainOnAssemblyLoad;
 
-            if (Program.GamesRepository.MissingFiles.Any())
+            int i = 0;
+            foreach (var a in e.Args)
             {
-                var sb =
-                    new StringBuilder(
-                        "Octgn cannot find the following files. The corresponding games have been disabled.\n\n");
-                foreach (string file in Program.GamesRepository.MissingFiles)
-                    sb.Append(file).Append("\n\n");
-                sb.Append("You should restore those files, or re-install the corresponding games.");
-
-                ShutdownMode oldShutdown = ShutdownMode;
-                ShutdownMode = ShutdownMode.OnExplicitShutdown;
-                new MessageWindow(sb.ToString()).ShowDialog();
-                ShutdownMode = oldShutdown;
+                Log.InfoFormat("Arg[{0}]: {1}", i, a);
+                i++;
             }
 
-#if(DEBUG)
-            Program.LauncherWindow.Show();
-            Program.ChatWindows = new List<ChatWindow>();
-#else
-            var uc = new UpdateChecker();
-            uc.ShowDialog();
-            if (!uc.IsClosingDown)
+            ExceptionlessClient.Current.Register(false);
+            ExceptionlessClient.Current.Configuration.IncludePrivateInformation = true;
+            ExceptionlessClient.Current.UnhandledExceptionReporting += (sender, args) =>
             {
-                Program.LauncherWindow.Show();
-                Program.ChatWindows = new List<ChatWindow>();
+                if (args.Exception is InvalidOperationException)
+                {
+                    bool gotit = args.Exception.Message.StartsWith("The Application object is being shut down.", StringComparison.InvariantCultureIgnoreCase);
+                    gotit = gotit ||
+                            (args.Exception.Message.ToLower().Contains("system.windows.controls.grid") &&
+                             args.Exception.Message.ToLower().Contains("row"));
+                    args.Cancel = gotit;
+                    return;
+                }
+                if (X.Instance.Debug)
+                {
+                    args.Cancel = true;
+                    return;
+                }
+            };
+            ExceptionlessClient.Current.SendingError += (sender, args) =>
+            {
+                if (X.Instance.Debug)
+                {
+                    return;
+                }
+                X.Instance.Try(() =>
+                {
+                    args.Error.UserName = Prefs.Username;
+                });
+                args.Error.AddObject(Config.Instance.Paths, "Registered Paths");
+                using (var cf = new ConfigFile(Config.Instance.ConfigPath))
+                {
+                    args.Error.AddObject(cf.ConfigData, "Config File");
+                }
+                args.Error.AddObject(e.Args, "Startup Arguments");
+                args.Error.AddRecentTraceLogEntries();
+
+                X.Instance.Try(() =>
+                {
+                    var ge = Program.GameEngine;
+                    var gameString = "";
+                    if (ge != null && ge.Definition != null)
+                    {
+                        var gameObject = new
+                        {
+                            Game = new
+                            {
+                                Name = ge.Definition.Name,
+                                Version = ge.Definition.Version,
+                                ID = ge.Definition.Id,
+                                Variables = ge.Variables,
+                                GlobalVariables = ge.GlobalVariables
+                            },
+                            IsConnected = ge.IsConnected,
+                            IsLocal = ge.IsLocal,
+                            SessionId = ge.SessionId,
+                            WaitingForState = ge.WaitForGameState,
+                            Players = Player.All.Select(player => new
+                            {
+                                GlobalVariables = player.GlobalVariables,
+                                Id = player.Id,
+                                InvertedTable = player.InvertedTable,
+                                IsGlobalPlayer = player.IsGlobalPlayer,
+                                Name = player.Name,
+                                Ready = player.Ready,
+                                State = player.State,
+                                Variables = player.Variables,
+                                WaitingOnPlayers = player.WaitingOnPlayers,
+                            })
+                        };
+                        args.Error.AddObject(gameObject, "Game State");
+                    }
+
+
+                });
+
+                X.Instance.Try(() =>
+                {
+                    var hierarchy = LogManager.GetRepository() as Hierarchy;
+                    if (hierarchy != null)
+                    {
+                        var mappender = hierarchy.Root.GetAppender("LimitedMemoryAppender") as LimitedMemoryAppender;
+                        if (mappender != null)
+                        {
+                            var items = new List<string>();
+
+                            foreach (var ev in mappender.GetEvents())
+                            {
+                                using (var writer = new StringWriter())
+                                {
+                                    mappender.Layout.Format(writer, ev);
+                                    items.Add(writer.ToString());
+
+                                }
+                            }
+
+                            args.Error.AddObject(items, "Recent Log Entries");
+                        }
+
+                    }
+                });
+
+                if (Program.LobbyClient != null)
+                {
+                    var lc = Program.LobbyClient;
+                    var lobbyObject = new
+                    {
+                        Connected = lc.IsConnected,
+                        Me = lc.Me
+                    };
+                }
+            };
+
+
+            if (X.Instance.Debug)
+            {
+                AppDomain.CurrentDomain.FirstChanceException += this.CurrentDomainFirstChanceException;
+                ExceptionlessClient.Current.Tags.Add("DEBUG");
             }
             else
             {
-                Current.MainWindow = null;
-                Program.LauncherWindow.Close();
-                Program.Exit();
+                AppDomain.CurrentDomain.UnhandledException += CurrentDomainUnhandledException;
+                Application.Current.DispatcherUnhandledException += CurrentOnDispatcherUnhandledException;
+                if (X.Instance.ReleaseTest)
+                {
+                    ExceptionlessClient.Current.Tags.Add("TEST");
+                }
+                else
+                {
+                    ExceptionlessClient.Current.Tags.Add("LIVE");
+                }
             }
-#endif
+
 
             if (e.Args.Any())
             {
                 Properties["ArbitraryArgName"] = e.Args[0];
             }
 
+            Log.Debug("Calling Base");
+            base.OnStartup(e);
+            Log.Debug("Base called.");
+            Program.Start(e.Args);
 
+        }
 
+        private void CurrentDomainOnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
+        {
+            Log.InfoFormat("LOADED ASSEMBLY: {0} - {1}", args.LoadedAssembly.FullName, args.LoadedAssembly.IsDynamic == false ? args.LoadedAssembly.Location : "NOLOCATIONDYNAMIC");
         }
 
         private void CurrentDomainFirstChanceException(object sender, FirstChanceExceptionEventArgs e)
         {
-#if(DEBUG)
-            Program.DebugTrace.TraceEvent(TraceEventType.Error, 0, e.Exception.ToString());
-#endif
+            //if (X.Instance.Debug)
+            //{
+            //    if (Program.GameMess != null && Program.GameEngine != null) Program.GameMess.Warning(e.Exception.Message + "\n" + e.Exception.StackTrace);
+            //}
+        }
+
+        private void CurrentOnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+        {
+            if (e.Exception is UserMessageException)
+            {
+				if((e.Exception as UserMessageException).Mode == UserMessageExceptionMode.Blocking || WindowManager.GrowlWindow == null)
+					ShowErrorMessageBox("Error",e.Exception.Message);
+				else
+				    WindowManager.GrowlWindow.AddNotification(new ErrorNotification(e.Exception.Message));
+                e.Handled = true;
+            }
+            if (e.Exception is InvalidOperationException && e.Exception.Message.StartsWith("The Application object is being shut down.", StringComparison.InvariantCultureIgnoreCase))
+            {
+                e.Handled = true;
+            }
         }
 
         private static void CurrentDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
         {
-            var ex = (Exception) e.ExceptionObject;
-            if (!Debugger.IsAttached)
+            var ex = (Exception)e.ExceptionObject;
+            var handled = false;
+            var ge = Program.GameEngine;
+            var gameString = "";
+            if (ge != null && ge.Definition != null)
+                gameString = "[Game " + ge.Definition.Name + " " + ge.Definition.Version + " " + ge.Definition.Id + "] [Username " + Prefs.Username + "] ";
+            if (ex is UserMessageException)
             {
-                var wnd = new ErrorWindow(ex);
-                wnd.ShowDialog();
+                if ((ex as UserMessageException).Mode == UserMessageExceptionMode.Blocking || WindowManager.GrowlWindow == null)
+                    ShowErrorMessageBox("Error", ex.Message);
+                else
+                    WindowManager.GrowlWindow.AddNotification(new ErrorNotification(ex.Message));
+                //ShowErrorMessageBox("Error", ex.Message);
+                Log.Warn("Unhandled Exception " + gameString, ex);
+                handled = true;
             }
-            else
+            else if (ex is COMException)
+            {
+                var er = ex as COMException;
+                if (er.ErrorCode == 0x800706A6)
+                {
+                    Log.Warn("Unhandled Exception " + gameString, ex);
+                    ShowErrorMessageBox("Error", "Your install of wine was improperly configured for OCTGN. Please make sure to follow our guidelines on our wiki.");
+                    handled = true;
+                }
+            }
+            else if (ex is XamlParseException)
+            {
+                var er = ex as XamlParseException;
+                Log.Warn("unhandled exception " + gameString, ex);
+                handled = true;
+                ShowErrorMessageBox("Error", "There was an error. If you are using Wine(linux/mac) most likely you didn't set it up right. If you are running on windows, then you should try and repair your .net installation and/or update windows. You can also try reinstalling OCTGN.");
+            }
+            else if (ex is IOException && (ex as IOException).Message.Contains("not enough space"))
+            {
+                handled = true;
+                ShowErrorMessageBox("Error", "Your computer has run out of hard drive space and OCTGN will have to shut down. Please resolve this before opening OCTGN back up again.");
+            }
+            if (!handled)
             {
                 if (e.IsTerminating)
-                    Debugger.Break();
+                    Log.Fatal("UNHANDLED EXCEPTION " + gameString, ex);
+                else
+                    Log.Error("UNHANDLED EXCEPTION " + gameString, ex);
             }
-            if (!e.IsTerminating)
-                Program.DebugTrace.TraceEvent(TraceEventType.Error, 0, ex.ToString());
+            if (e.IsTerminating)
+            {
+                if (handled)
+                    ShowErrorMessageBox("Error", "We will now shut down OCTGN.\nIf this continues to happen please let us know!");
+                else
+                    ShowErrorMessageBox("Error", "Something unexpected happened. We will now shut down OCTGN.\nIf this continues to happen please let us know!");
+                Sounds.Close();
+                Application.Current.Shutdown(-1);
+            }
+        }
+
+        private static void ShowErrorMessageBox(string title, string message)
+        {
+            Application.Current.Dispatcher.Invoke(new Action(() => MessageBox.Show(message, title, MessageBoxButton.OK, MessageBoxImage.Exclamation)));
         }
 
         protected override void OnExit(ExitEventArgs e)
         {
+            X.Instance.Try(PlayDispatcher.Instance.Dispose);
+            ExceptionlessClient.Current.Shutdown();
             // Fix: this can happen when the user uses the system close button.
             // If a game is running (e.g. in StartGame.xaml) some threads don't
             // stop (i.e. the database thread and/or the networking threads)
-            if (Program.IsGameRunning) Program.StopGame();
+            X.Instance.Try(Program.StopGame);
+            Sounds.Close();
             base.OnExit(e);
         }
     }

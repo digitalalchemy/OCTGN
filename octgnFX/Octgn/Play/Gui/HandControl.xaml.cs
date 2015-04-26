@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -23,9 +24,11 @@ namespace Octgn.Play.Gui
         protected override void OnCardOver(object sender, CardsEventArgs e)
         {
             base.OnCardOver(sender, e);
-            e.CardSize =
-                new Size(
-                    100*Program.Game.Definition.CardDefinition.Width/Program.Game.Definition.CardDefinition.Height, 100);
+            for(var i = 0;i<e.Cards.Length;i++)
+            {
+                e.CardSizes[i] = new Size(e.Cards[i].Size.Width * 100 / e.Cards[i].Size.Height, 100);
+            }
+            //e.CardSize = new Size(100 * Program.GameEngine.Definition.DefaultSize.Width / Program.GameEngine.Definition.DefaultSize.Height, 100);
             _fanPanel.DisplayInsertIndicator(e.ClickedCard, _fanPanel.GetIndexFromPoint(Mouse.GetPosition(_fanPanel)));
         }
 
@@ -40,21 +43,26 @@ namespace Octgn.Play.Gui
             e.Handled = e.CanDrop = true;
             if (!@group.TryToManipulate()) return;
             int idx = _fanPanel.GetIndexFromPoint(Mouse.GetPosition(_fanPanel));
-            foreach (Card c in e.Cards)
+            var cards = e.Cards.ToArray();
+
+            Card.MoveCardsTo(@group, cards, (args) =>
             {
+                var c = args.Card;
+                args.Index = idx;
                 bool doNotIncrement = (c.Group == @group && @group.GetCardIndex(c) < idx);
-                c.MoveTo(@group, e.FaceUp != null && e.FaceUp.Value, idx);
+                c.MoveTo(@group, e.FaceUp != null && e.FaceUp.Value, idx, false);
                 // Fix: some cards (notably copies like token) may be deleted when they change group
                 // in those case we should increment idx, otherwise an IndexOutOfRange exception may occur
                 if (c.Group != @group)
                     doNotIncrement = true;
                 if (!doNotIncrement) idx++;
-            }
+
+            }, false);
         }
 
         private void SaveFanPanel(object sender, RoutedEventArgs e)
         {
-            _fanPanel = (FanPanel) sender;
+            _fanPanel = (FanPanel)sender;
         }
     }
 }

@@ -8,30 +8,32 @@ Get Involved!
   * Make your awesome change! (by following this file)
   * Request we pull it in (http://help.github.com/send-pull-requests/)
 
-Your own awesome changes
+Your own awesome changes(This is a bit out of date but should still work)
 -------------------------------------------------
-* Get Visual Studio Express C# (http://www.microsoft.com/visualstudio/en-us/products/2010-editions/visual-csharp-express)
-* Open the main project file under **OCTGN/octgnFX/Octgn/OCTGN.sln** with Visual Studio Express C#
+* Install Chocolatey (http://chocolatey.org/)
+* Install .Net 4.0 (http://www.microsoft.com/en-us/download/details.aspx?id=17718)
+* Install Awesomium 1.7.4.2 (http://www.awesomium.com/downloads/awesomium_1_7_4_2_sdk_win.exe)
+* Open a command prompt and type: **cinst OctgnDevPackage-Express**
+* Fork & Clone (Links Under **Get Involved!** above)
+* Open the main project file under **OCTGN/OCTGN.sln** with Visual Studio Express C#
 * Do the greatness!
 
-To work on the web component
+Recommended GitConfig Settings
 -------------------------------------------------
-**Note:** This project is not included in the main project, because having it included makes it unable to be opened from 
-express editions, and we want to keep the development process open to all.  It requires the main project to be built so 
-it can include the required assemblies.
-
-* Get Visual Web Developer Express (http://www.microsoft.com/visualstudio/en-us/products/2010-editions/visual-web-developer-express)
-* Open the subproject file under **Webcontent/Webcontent.csproj** with the web developer version of Visual Studio Express
-* **Important** This project references two components from the main project, you will have to add them as references
-  * OCTGN\octgnFX\Skylabs.Lobby\bin\Debug\Skylabs.Lobby.dll 
-  * OCTGN\octgnFX\Octgn\bin\Debug\Skylabs.LobbyServer.exe
-* Do the greatness! 
+```
+[core]
+	repositoryformatversion = 0
+	filemode = false
+	ignorecase = true
+	autocrlf = false
+[push]
+	default = simple
+```
 
 Components
 -------------------------------------------------
-**TODO:** Installer, octgnFX/CassiniDev, octgnFX/ConsoleHelper, octgnFX/Graphics, octgnFX/Lib, octgnFX/Octgn.Data, 
-octgnFX/Octgn.LobbyServer, octgnFX/Octgn.Server,  octgnFX/Octgn.StandAloneServer, octgnFX/Skylabs.Lobby, octgnFX/Skylabs.MultiLogin, 
-octgnFX/Webcontent
+**TODO:** Installer, octgnFX/Graphics, octgnFX/Lib, octgnFX/Octgn.Data, octgnFX/Octgn.LobbyServer, 
+octgnFX/Octgn.Server,  octgnFX/Octgn.StandAloneServer, octgnFX/Skylabs.Lobby
 
 # Python
 Octgn uses IronPython for its in-game scripting engine.

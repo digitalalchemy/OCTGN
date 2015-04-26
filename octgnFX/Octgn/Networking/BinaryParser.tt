@@ -19,11 +19,13 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows.Media;
 using Octgn.Play;
+using log4net;
 
 namespace Octgn.Networking
 {
 	sealed class BinaryParser
 	{
+		internal static ILog Log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 		Handler handler;
 		
 		public BinaryParser(Handler handler)
@@ -49,6 +51,7 @@ namespace Octgn.Networking
     WriteLine("{");
     PushIndent("\t");
     string msgName = msg.Attribute("name").Value;
+	//WriteLine("Log.Info(\"[ProtIn] {0}\");",msgName);
     int paramId = 0;
     foreach (var param in msg.Elements("param"))
     {
@@ -109,7 +112,15 @@ for (int i = 0; i < length; ++i)
 
     { "float", "float arg{0} = reader.ReadSingle();" },
     { "bool", "bool arg{0} = reader.ReadBoolean();" },
+    { "bool[]", @"length = reader.ReadInt16();
+bool[] arg{0} = new bool[length];
+for (int i = 0; i < length; ++i)
+	arg{0}[i] = reader.ReadBoolean();" },
     { "string", "string arg{0} = reader.ReadString();" },
+    { "string[]", @"length = reader.ReadInt16();
+string[] arg{0} = new string[length];
+for (int i = 0; i < length; ++i)
+	arg{0}[i] = reader.ReadString();" },
     { "Version", "Version arg{0} = new Version(reader.ReadString());" },
     { "Guid", "Guid arg{0} = new Guid(reader.ReadBytes(16));" },
 
@@ -119,6 +130,10 @@ for (int i = 0; i < length; ++i)
 	arg{0}[i] = new Guid(reader.ReadBytes(16));" },
 
     { "Player", @"Player arg{0} = Player.Find(reader.ReadByte());
+if (arg{0} == null)
+{{ Debug.WriteLine(""[{1}] Player not found.""); return; }}" },
+
+			    { "PlayerOrSpectator", @"Player arg{0} = Player.FindIncludingSpectators(reader.ReadByte());
 if (arg{0} == null)
 {{ Debug.WriteLine(""[{1}] Player not found.""); return; }}" },
 

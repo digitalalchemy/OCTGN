@@ -42,12 +42,12 @@
         <RowDefinition Height="Auto" />
       </Grid.RowDefinitions>
 
-      <gui:CardControl x:Name="cardsCtrl" DataContext="{Binding Cards[0]}">
+      <gui:CardControl x:Name="cardsCtrl" DataContext="{Binding TopCard}" DataContextChanged="cardsCtrl_DataContextChanged" CardImageStretch="Uniform">
         <gui:CardControl.Style>
           <Style>
             <Style.Triggers>
               <DataTrigger Binding="{Binding}" Value="{x:Null}">
-                <Setter Property="UIElement.Visibility" Value="Hidden" />
+                <Setter Property="UIElement.Visibility" Value="Collapsed" />
               </DataTrigger>
             </Style.Triggers>
           </Style>

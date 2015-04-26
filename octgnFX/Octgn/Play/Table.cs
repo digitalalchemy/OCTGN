@@ -1,10 +1,8 @@
-using Octgn.Definitions;
-
 namespace Octgn.Play
 {
     public class Table : Group
     {
-        public Table(GroupDef def)
+        public Table(DataNew.Entities.Group def)
             : base(null, def)
         {
         }
@@ -12,13 +10,13 @@ namespace Octgn.Play
         public void BringToFront(Card card)
         {
             if (card.Group != this) return;
-            card.MoveToTable((int) card.X, (int) card.Y, card.FaceUp, Cards.Count);
+			card.MoveToTable((int) card.X, (int) card.Y, card.FaceUp, Count,false);
         }
 
         public void SendToBack(Card card)
         {
             if (card.Group != this) return;
-            card.MoveToTable((int) card.X, (int) card.Y, card.FaceUp, 0);
+            card.MoveToTable((int) card.X, (int) card.Y, card.FaceUp, 0,false);
         }
     }
 }

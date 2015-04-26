@@ -1,18 +1,19 @@
-using System;
-using System.Linq;
-using Octgn.Definitions;
+using Octgn.Utils;
 
 //using Octgn.Play.GUI;
 
 namespace Octgn.Play
 {
+    using System;
+    using System.Collections.Generic;
+
     public sealed class Pile : Group
     {
         #region Public interface
 
         private bool _collapsed;
 
-        internal Pile(Player owner, GroupDef def)
+        internal Pile(Player owner, DataNew.Entities.Group def)
             : base(owner, def)
         {
             _collapsed = def.Collapsed;
@@ -34,87 +35,112 @@ namespace Octgn.Play
 
         public Card TopCard
         {
-            get { return cards.Count > 0 ? null : cards[0]; }
+            get
+            {
+                lock (cards)
+                {
+                    return cards.Count > 0 ? cards[0] : null;
+                }
+            }
         }
 
-        // C'tor
+        #region Overrides of Group
+
+        public override void OnCardsChanged()
+        {
+            base.OnCardsChanged();
+            OnPropertyChanged("TopCard");
+        }
+
+        #endregion
 
         // Prepare for a shuffle
-        // Returns true if the shuffle is asynchronous and should be waited for completion.
-        public bool Shuffle()
+        public void Shuffle()
         {
-            if (Locked) return false;
+            if (Locked || Count == 0) return;
 
-            // Don't shuffle an empty pile
-            if (cards.Count == 0) return false;
-
-            if (Player.Count > 1)
-            //if (false)
+            lock (cards)
             {
-                WantToShuffle = Locked = true;
-                bool ready = true;
-                // Unalias only if necessary
-                if (cards.Any(c => c.Type.Alias))
+                var cardIds = new int[cards.Count];
+                //var cardAliases = new ulong[cards.Count];
+                var rnd = new CryptoRandom();
+                var posit = new short[cards.Count];
+                var availPosList = new List<short>(cards.Count);
+                for (var i = 0; i < cards.Count; i++)
                 {
-                    Program.Client.Rpc.UnaliasGrp(this);
-                    ready = false;
+                    //availPosList[i] = (short)i;
+                    availPosList.Add((short)i);
                 }
-                if (ready)
-                    DoShuffle();
-                return true;
+                for (int i = cards.Count - 1; i >= 0; i--)
+                {
+                    var availPos = rnd.Next(availPosList.Count);
+                    var pos = availPosList[availPos];
+                    availPosList.RemoveAt(availPos);
+                    cardIds[i] = cards[pos].Id;
+                    //cardAliases[i] = cis[r].Visible ? ulong.MaxValue : Crypto.ModExp(cis[r].Key);
+                    //cis[pos] = cis[i];
+                    posit[i] = pos;
+                }
+                // move own cards to new positions
+                DoShuffle(cardIds, posit);
+                // Inform other players
+                Program.Client.Rpc.Shuffled(Player.LocalPlayer, this, cardIds, posit);
             }
-            ShuffleAlone();
-            return false;
         }
 
         // Do the shuffle
-        internal void DoShuffle()
+        internal void DoShuffle(int[] card, short[] pos)
         {
-            // Set internal fields
-            PreparingShuffle = false;
-            FilledShuffleSlots = 0;
-            HasReceivedFirstShuffledMessage = false;
-            // Create aliases
-            var cis = new CardIdentity[cards.Count];
-            for (int i = 0; i < cards.Count; i++)
+            // Check the args
+            if (card.Length != pos.Length)
             {
-                if (cards[i].IsVisibleToAll())
-                {
-                    cis[i] = cards[i].Type;
-                    cis[i].Visible = true;
-                }
-                else
-                {
-                    CardIdentity ci = cis[i] = new CardIdentity(Program.Game.GenerateCardId());
-                    ci.Alias = ci.MySecret = true;
-                    ci.Key = ((ulong) Crypto.PositiveRandom()) << 32 | (uint) cards[i].Type.Id;
-                    ci.Visible = false;
-                }
+                Program.GameMess.Warning("[Shuffled] Cards and positions lengths don't match.");
+                return;
             }
-            // Shuffle
-            var cardIds = new int[cards.Count];
-            var cardAliases = new ulong[cards.Count];
-            var rnd = new Random();
-            for (int i = cards.Count - 1; i >= 0; i--)
+            //Build the Dict. of new locations
+            var shuffled = new Dictionary<int, Card>();
+            var broke = false;
+            for (int i = 0; i < card.Length; i++)
             {
-                int r = rnd.Next(i);
-                cardIds[i] = cis[r].Id;
-                cardAliases[i] = cis[r].Visible ? ulong.MaxValue : Crypto.ModExp(cis[r].Key);
-                cis[r] = cis[i];
+                var cur = this[i];
+                if (cur == null)
+                {
+					broke = true;
+                    break;
+                }
+                shuffled.Add(pos[i], cur);
+                // Get the card
+                CardIdentity ci = CardIdentity.Find(card[i]);
+                if (ci == null)
+                {
+                    Program.GameMess.Warning("[Shuffled] Card not found.");
+                    continue;
+                }
+                cur.SetVisibility(ci.Visible ? DataNew.Entities.GroupVisibility.Everybody : DataNew.Entities.GroupVisibility.Nobody, null);
             }
-            // Send the request
-            Program.Client.Rpc.CreateAlias(cardIds, cardAliases);
-            Program.Client.Rpc.Shuffle(this, cardIds);
+            if (broke)
+            {
+                Program.GameMess.Warning("[Shuffled] Tried to shuffle, but it looks like something broke in the process...");
+                return;
+            }
+            //Move cards to their new indexes
+            for (int i = 0; i < card.Length; i++)
+            {
+                Remove(shuffled[i]);
+                AddAt(shuffled[i], i);
+            }
+
+            OnShuffled();
         }
 
         #endregion
 
         private void ShuffleAlone()
         {
-            var rnd = new Random();
+            var rnd = new CryptoRandom();
             for (int i = cards.Count - 1; i >= 0; i--)
             {
-                int r = rnd.Next(i);
+                int r = rnd.Next(i + 1);
                 Card temp = cards[r];
                 cards[r] = cards[i];
                 cards[i] = temp;

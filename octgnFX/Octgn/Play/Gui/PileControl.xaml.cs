@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -51,12 +52,28 @@ namespace Octgn.Play.Gui
             scaleTransform.BeginAnimation(ScaleTransform.ScaleXProperty, doubleAnimation);
         }
 
+        public override void ExecuteDefaultAction(Card card)
+        {
+            if (!ExecuteDefaultGroupAction()) ExecuteDefaultCardAction(card);
+        }
+
         #region Card DnD
 
         protected override void OnCardOver(object sender, CardsEventArgs e)
         {
             base.OnCardOver(sender, e);
-            e.CardSize = new Size(cardsCtrl.ActualWidth, cardsCtrl.ActualHeight);
+			for(var i = 0;i<e.Cards.Length;i++)
+            {
+                e.CardSizes[i] = new Size(cardsCtrl.ActualWidth, cardsCtrl.ActualHeight);
+                if (cardsCtrl.ActualWidth > cardsCtrl.ActualHeight)
+                {
+                    e.CardSizes[i] = new Size(e.Cards[i].Size.Width*cardsCtrl.ActualHeight/e.Cards[i].Size.Height, cardsCtrl.ActualHeight);
+                }
+                else
+                {
+                    e.CardSizes[i] = new Size(cardsCtrl.ActualWidth, e.Cards[i].Size.Height * cardsCtrl.ActualWidth / e.Cards[i].Size.Width);
+                }
+            }
 
             if (bottomZone.Visibility != Visibility.Visible)
             {
@@ -81,17 +98,31 @@ namespace Octgn.Play.Gui
         protected override void OnCardDropped(object sender, CardsEventArgs e)
         {
             e.Handled = e.CanDrop = true;
+            //if (group.TryToManipulate())
+            //    foreach (Card c in e.Cards)
+            //        c.MoveTo(group, e.FaceUp != null && e.FaceUp.Value, 0,false);
             if (group.TryToManipulate())
-                foreach (Card c in e.Cards)
-                    c.MoveTo(group, e.FaceUp != null && e.FaceUp.Value, 0);
+            {
+                var cards = e.Cards.ToArray();
+                Card.MoveCardsTo(group, cards, 
+                    Enumerable.Repeat(e.FaceUp ?? false,cards.Length).ToArray()
+                    ,Enumerable.Repeat(0,cards.Length).ToArray(),false);
+            }
         }
 
         private void OnCardDroppedBottom(object sender, CardsEventArgs e)
         {
             e.Handled = e.CanDrop = true;
+            //if (group.TryToManipulate())
+            //    foreach (Card c in e.Cards)
+            //        c.MoveTo(group, e.FaceUp != null && e.FaceUp.Value, group.Count,false);
             if (group.TryToManipulate())
-                foreach (Card c in e.Cards)
-                    c.MoveTo(group, e.FaceUp != null && e.FaceUp.Value, group.Count);
+            {
+                var cards = e.Cards.ToArray();
+                Card.MoveCardsTo(group, cards, 
+                    Enumerable.Repeat(e.FaceUp ?? false,cards.Length).ToArray()
+                    ,Enumerable.Range(group.Count,cards.Length).ToArray(),false);
+            }
         }
 
         private void OnCardOverBottom(object sender, CardsEventArgs e)
@@ -102,5 +133,18 @@ namespace Octgn.Play.Gui
         }
 
         #endregion
+
+        private void cardsCtrl_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            // Hack: animate the first card into a pile, 
+            // otherwise the CardControl sometimes has issues displaying anything.
+            // for some reason...
+            if (e.OldValue == null)
+            {
+                var anim = new DoubleAnimation(1.1, 1, new Duration(TimeSpan.FromMilliseconds(150)), FillBehavior.Stop);
+                cardsCtrl.turn.BeginAnimation(ScaleTransform.ScaleXProperty, anim);
+                cardsCtrl.turn.BeginAnimation(ScaleTransform.ScaleYProperty, anim);
+            }
+        }
     }
 }

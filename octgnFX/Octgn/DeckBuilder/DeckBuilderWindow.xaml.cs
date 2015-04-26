@@ -9,35 +9,145 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
-using System.Windows.Media.Imaging;
+using System.Windows.Navigation;
 using Microsoft.Win32;
-using Octgn.Data;
+using Octgn.Core;
+using System.Collections.Generic;
+using System.Windows.Controls.Primitives;
+using Octgn.Core.DataExtensionMethods;
+using Octgn.Core.DataManagers;
+using Octgn.Core.Plugin;
+using Octgn.DataNew.Entities;
+using Octgn.Library.Exceptions;
+using Octgn.Library.Plugin;
+using Octgn.Site.Api.Models;
+using Octgn.Windows;
+
+using log4net;
+using Octgn.Controls;
+using System.Windows.Media;
+using System.Windows.Documents;
 
 namespace Octgn.DeckBuilder
 {
-    public partial class DeckBuilderWindow : INotifyPropertyChanged
-    {
-        private Deck _deck;
-        private string _deckFilename;
-        private Data.Game _game;
-        private Deck.Section _section;
-        private bool _unsaved;
 
-        public DeckBuilderWindow()
+    public partial class DeckBuilderWindow : INotifyPropertyChanged, IDeckBuilderPluginController
+    {
+        internal static ILog Log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+        private ObservableDeck _deck;
+        private string _deckFilename;
+        private Game _game;
+        private ObservableSection _section;
+        private bool _unsaved;
+        private string selection = null;
+        private Guid set_id;
+
+        private bool exitOnClose;
+
+        public bool AlwaysShowProxy
         {
+            get { return (bool)GetValue(AlwaysShowProxyProperty); }
+            set { SetValue(AlwaysShowProxyProperty, value); }
+        }
+
+        public bool hideResultCount
+        {
+            get { return Octgn.Core.Prefs.HideResultCount; }
+            set
+            {
+                Octgn.Core.Prefs.HideResultCount = value;
+                foreach (SearchControl sc in searchTabs.Items)
+                {
+                    sc.UpdateCount();
+                }
+            }
+        }
+
+        public static readonly DependencyProperty AlwaysShowProxyProperty =
+            DependencyProperty.Register("AlwaysShowProxy", typeof(bool), typeof(DeckBuilderWindow),
+                                        new UIPropertyMetadata(false));
+
+        public DeckBuilderWindow(IDeck deck = null, bool exitOnClose = false)
+        {
+            this.exitOnClose = exitOnClose;
             Searches = new ObservableCollection<SearchControl>();
             InitializeComponent();
             // If there's only one game in the repository, create a deck of the correct kind
-            if (Program.GamesRepository.Games.Count == 1)
+            try
             {
-                Game = Program.GamesRepository.Games[0];
-                Deck = new Deck(Game);
-                _deckFilename = null;
+                if (GameManager.Get().GameCount == 1)
+                {
+                    var g = GameManager.Get().Games.First();
+                    if (g.SharedDeckSections.Count > 0 || g.DeckSections.Count > 0)
+                    {
+                        Game = g;
+                        Deck = Game.CreateDeck().AsObservable();
+                        _deckFilename = null;
+                    }
+
+                }
+
+            }
+            catch (UserMessageException e)
+            {
+                TopMostMessageBox.Show(e.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch (Exception e)
+            {
+                Log.Error("", e);
+                TopMostMessageBox.Show(
+                    "There was an unexpected error. Please try restarting and trying again.\n If that doesn't help please let us know on our site http://www.octgn.net",
+                    "Error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+
             }
             Version oversion = Assembly.GetExecutingAssembly().GetName().Version;
-            newSubMenu.ItemsSource = Program.GamesRepository.Games;
-            loadSubMenu.ItemsSource = Program.GamesRepository.Games;
-            Title = "Octgn Deck Editor  version " + oversion;
+            newSubMenu.ItemsSource = GameManager.Get().Games;
+            //Title = "Octgn Deck Editor  version " + oversion;
+
+            var deplugins = PluginManager.GetPlugins<IDeckBuilderPlugin>();
+            foreach (var p in deplugins)
+            {
+                try
+                {
+                    p.OnLoad(GameManager.Get());
+                    foreach (var m in p.MenuItems)
+                    {
+                        var mi = new MenuItem() { Header = m.Name };
+                        var m1 = m;
+                        mi.Click += (sender, args) =>
+                            {
+                                try
+                                {
+                                    m1.OnClick(this);
+                                }
+                                catch (Exception e)
+                                {
+                                    new ErrorWindow(e).Show();
+                                }
+                            };
+                        MenuPlugins.Items.Add(mi);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Log.Error("Unable to load plugin " + p.Name, e);
+                }
+
+            }
+            if (deck != null)
+            {
+                if (deck is MetaDeck)
+                {
+                    this._deckFilename = (deck as MetaDeck).Path;
+                }
+                var g = GameManager.Get().Games.FirstOrDefault(x => x.Id == deck.GameId);
+                if (g == null) this.Close();
+                LoadDeck(deck);
+                Game = g;
+            }
+
         }
 
         #region Search tabs
@@ -51,7 +161,7 @@ namespace Octgn.DeckBuilder
 
         private void CloseTabCommand(object sender, ExecutedRoutedEventArgs e)
         {
-            var search = (SearchControl) ((FrameworkElement) e.OriginalSource).DataContext;
+            var search = (SearchControl)((FrameworkElement)e.OriginalSource).DataContext;
             Searches.Remove(search);
             CommandManager.InvalidateRequerySuggested();
         }
@@ -66,18 +176,25 @@ namespace Octgn.DeckBuilder
         {
             if (Game == null) //ralig - issue 46
                 return;
-            var ctrl = new SearchControl(Game)
-                           {SearchIndex = Searches.Count == 0 ? 1 : Searches.Max(x => x.SearchIndex) + 1};
+            var ctrl = new SearchControl(Game, this) { SearchIndex = Searches.Count == 0 ? 1 : Searches.Max(x => x.SearchIndex) + 1 };
             ctrl.CardAdded += AddResultCard;
             ctrl.CardRemoved += RemoveResultCard;
             ctrl.CardSelected += CardSelected;
+            LoadFonts(ctrl.resultsGrid);
             Searches.Add(ctrl);
             searchTabs.SelectedIndex = Searches.Count - 1;
         }
 
         #endregion
 
-        public Deck Deck
+        private void AlwaysShowProxyCommand(object sender, ExecutedRoutedEventArgs e)
+        {
+            AlwaysShowProxy = !AlwaysShowProxy;
+
+            cardImageControl.AlwaysShowProxy = this.AlwaysShowProxy;
+        }
+
+        public ObservableDeck Deck
         {
             get { return _deck; }
             set
@@ -85,29 +202,70 @@ namespace Octgn.DeckBuilder
                 if (_deck == value) return;
                 _deck = value;
                 _unsaved = false;
-                ActiveSection = value.Sections.FirstOrDefault();
+                ActiveSection = value.Sections.FirstOrDefault() as ObservableSection;
                 OnPropertyChanged("Deck");
+                OnPropertyChanged("DeckSections");
+                OnPropertyChanged("DeckSharedSections");
             }
         }
 
-        private Data.Game Game
+        public IEnumerable<ObservableSection> DeckSections
+        {
+            get
+            {
+                if (_deck == null) return new List<ObservableSection>();
+                return _deck.Sections.OfType<ObservableSection>().Where(x => x.Shared == false);
+            }
+        }
+
+        public IEnumerable<ObservableSection> DeckSharedSections
+        {
+            get
+            {
+                if (_deck == null) return new List<ObservableSection>();
+                return _deck.Sections.OfType<ObservableSection>().Where(x => x.Shared == true);
+            }
+        }
+
+        public bool IsGameLoaded
+        {
+            get
+            {
+                return Game != null;
+            }
+        }
+
+        public DataNew.Entities.Game Game
         {
             get { return _game; }
-            set
+            private set
             {
-                if (_game == value || value == null ) return;
+                if (_game == value || value == null)
+                {
+                    cardImageControl.SetGame(new Game() { Name = "No Game Selected", CardSize= new CardSize(){Back ="pack://application:,,,/Resources/Back.jpg" }});
+                    return;
+                }
 
                 _game = value;
-
+                cardImageControl.SetGame(_game);
                 ActiveSection = null;
-
-                    cardImage.Source = new BitmapImage(value.GetCardBackUri());//Sets initial preview to default backing (!isFaceUp Image)
                 Searches.Clear();
-                AddSearchTab();
+                try
+                {
+                    AddSearchTab();
+
+                }
+                catch (Exception e)
+                {
+                    Log.Error("", e);
+                    throw new UserMessageException("There was an error. Try restarting!", e);
+                }
+                OnPropertyChanged("Game");
+                OnPropertyChanged("IsGameLoaded");
             }
         }
 
-        public Deck.Section ActiveSection
+        public ObservableSection ActiveSection
         {
             get { return _section; }
             set
@@ -131,24 +289,42 @@ namespace Octgn.DeckBuilder
             e.Handled = true;
             if (Game == null)
             {
-                if (Program.GamesRepository.Games.Count == 1)
-                    Game = Program.GamesRepository.Games[0];
+                if (GameManager.Get().GameCount == 1) Game = GameManager.Get().Games.First();
                 else
                 {
-                    MessageBox.Show("You have to select a game before you can use this command.", "Error",
+                    TopMostMessageBox.Show("You have to select a game before you can use this command.", "Error",
                                     MessageBoxButton.OK);
                     return;
                 }
+                //if (Program.GamesRepository.Games.Count == 1)
+                //    Game = Program.GamesRepository.Games[0];
+                //else
+                //{
+                //    MessageBox.Show("You have to select a game before you can use this command.", "Error",
+                //                    MessageBoxButton.OK);
+                //    return;
+                //}
             }
-            Deck = new Deck(Game);
+            Deck = Game.CreateDeck().AsObservable();
+            //Deck = new Deck(Game);
             _deckFilename = null;
         }
 
         private void NewClicked(object sender, RoutedEventArgs e)
         {
+            var game = (DataNew.Entities.Game)((MenuItem)e.OriginalSource).DataContext;
+            if (game.DeckSections.Count == 0 && game.SharedDeckSections.Count == 0)
+            {
+                TopMostMessageBox.Show(
+                    "This game has no deck sections, so you cannot build a deck for it.",
+                    "Warning",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
             if (_unsaved)
             {
-                MessageBoxResult result = MessageBox.Show("This deck contains unsaved modifications. Save?", "Warning",
+                MessageBoxResult result = TopMostMessageBox.Show("This deck contains unsaved modifications. Save?", "Warning",
                                                           MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
                 switch (result)
                 {
@@ -161,10 +337,39 @@ namespace Octgn.DeckBuilder
                         return;
                 }
             }
-            Game = (Data.Game) ((MenuItem) e.OriginalSource).DataContext;
+            Game = game;
             CommandManager.InvalidateRequerySuggested();
-            Deck = new Deck(Game);
+            Deck = Game.CreateDeck().AsObservable();
+            //Deck = new Deck(Game);
             _deckFilename = null;
+        }
+
+        private void LoadFonts(Control control)
+        {
+            if (Game == null)
+            {
+                return;
+            }
+            if (!Prefs.UseGameFonts)
+                return;
+            if (Game.Fonts.Count > 0)
+            {
+                foreach (Font font in Game.Fonts)
+                {
+                    if (font.Target.ToLower().Equals("deckeditor"))
+                    {
+                        if (!File.Exists(font.Src))
+                        {
+                            return;
+                        }
+                        System.Drawing.Text.PrivateFontCollection pfc = new System.Drawing.Text.PrivateFontCollection();
+                        control.FontSize = font.Size;
+                        pfc.AddFontFile(font.Src);
+                        string font1 = "file:///" + Path.GetDirectoryName(font.Src) + "/#" + pfc.Families[0].Name;
+                        control.FontFamily = new System.Windows.Media.FontFamily(font1.Replace("\\", "/"));
+                    }
+                }
+            }
         }
 
         private void SaveDeck(object sender, ExecutedRoutedEventArgs e)
@@ -179,6 +384,12 @@ namespace Octgn.DeckBuilder
             SaveAs();
         }
 
+        private void ExportDeckAsHandler(object sender, ExecutedRoutedEventArgs e)
+        {
+            e.Handled = true;
+            ExportAs();
+        }
+
         private void Save()
         {
             if (_deckFilename == null)
@@ -188,13 +399,12 @@ namespace Octgn.DeckBuilder
             }
             try
             {
-                Deck.Save(_deckFilename);
+                Deck.Save(_game, _deckFilename);
                 _unsaved = false;
             }
-            catch (Exception ex)
+            catch (UserMessageException ex)
             {
-                MessageBox.Show("An error occured while trying to save the deck:\n" + ex.Message, "Error",
-                                MessageBoxButton.OK, MessageBoxImage.Error);
+                TopMostMessageBox.Show(ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -204,43 +414,56 @@ namespace Octgn.DeckBuilder
                           {
                               AddExtension = true,
                               Filter = "Octgn decks|*.o8d",
-                              InitialDirectory =
-                                  SimpleConfig.ReadValue("DeckDirLastUsed", "none") == "none"
-                                      ? Game.DefaultDecksPath
-                                      : SimpleConfig.ReadValue("DeckDirLastUsed")
+                              InitialDirectory = Game.GetDefaultDeckPath()
                           };
             if (!sfd.ShowDialog().GetValueOrDefault()) return;
             try
             {
-                Deck.Save(sfd.FileName);
+                Deck.Save(_game, sfd.FileName);
                 _unsaved = false;
                 _deckFilename = sfd.FileName;
-                SimpleConfig.WriteValue("lastFolder", Path.GetFileName(_deckFilename));
             }
-            catch (Exception ex)
+            catch (UserMessageException ex)
             {
-                MessageBox.Show("An error occured while trying to save the deck:\n" + ex.Message, "Error",
-                                MessageBoxButton.OK, MessageBoxImage.Error);
+                TopMostMessageBox.Show(ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ExportAs()
+        {
+            var sfd = new SaveFileDialog
+            {
+                AddExtension = true,
+                Filter = "Text File|*.txt",
+                InitialDirectory = Game.GetDefaultDeckPath()
+            };
+            if (!sfd.ShowDialog().GetValueOrDefault()) return;
+            try
+            {
+                Deck.ExportAsText(_game, sfd.FileName);
+            }
+            catch (UserMessageException ex)
+            {
+                TopMostMessageBox.Show(ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
         private void LoadDeckCommand(object sender, ExecutedRoutedEventArgs e)
         {
             e.Handled = true;
-            LoadDeck(Game);
+            LoadDeck();
         }
 
         private void LoadClicked(object sender, RoutedEventArgs e)
         {
-            var game = (Data.Game) ((MenuItem) e.OriginalSource).DataContext;
-            LoadDeck(game);
+            LoadDeck();
         }
 
-        private void LoadDeck(Data.Game game)
+        private void LoadDeck()
         {
             if (_unsaved)
             {
-                MessageBoxResult result = MessageBox.Show("This deck contains unsaved modifications. Save?", "Warning",
+                MessageBoxResult result = TopMostMessageBox.Show("This deck contains unsaved modifications. Save?", "Warning",
                                                           MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
                 switch (result)
                 {
@@ -257,32 +480,29 @@ namespace Octgn.DeckBuilder
             var ofd = new OpenFileDialog
                           {
                               Filter = "Octgn deck files (*.o8d) | *.o8d",
-                              InitialDirectory =
-                                  ((game != null) && (SimpleConfig.ReadValue("lastFolder")) == "")
-                                      ? game.DefaultDecksPath
-                                      : SimpleConfig.ReadValue("lastFolder")
+                              InitialDirectory = new Game().GetDefaultDeckPath()
                           };
             if (ofd.ShowDialog() != true) return;
-            SimpleConfig.WriteValue("lastFolder", Path.GetDirectoryName(ofd.FileName));
 
             // Try to load the file contents
-            Deck newDeck;
+            ObservableDeck newDeck;
             try
             {
-                newDeck = Deck.Load(ofd.FileName, Program.GamesRepository);
+                newDeck = new Deck().Load(ofd.FileName).AsObservable();
+                Game = GameManager.Get().Games.First(x => x.Id == newDeck.GameId);
             }
-            catch (DeckException ex)
+            catch (UserMessageException ex)
             {
-                MessageBox.Show(ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                TopMostMessageBox.Show(ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Octgn couldn't load the deck.\r\nDetails:\r\n\r\n" + ex.Message, "Error",
+                TopMostMessageBox.Show("Octgn couldn't load the deck.\r\nDetails:\r\n\r\n" + ex.Message, "Error",
                                 MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
-            Game = Program.GamesRepository.Games.First(g => g.Id == newDeck.GameId);
+            //Game = Program.GamesRepository.Games.First(g => g.Id == newDeck.GameId);
             Deck = newDeck;
             _deckFilename = ofd.FileName;
             CommandManager.InvalidateRequerySuggested();
@@ -299,7 +519,7 @@ namespace Octgn.DeckBuilder
 
             if (_unsaved)
             {
-                MessageBoxResult result = MessageBox.Show("This deck contains unsaved modifications. Save?", "Warning",
+                MessageBoxResult result = TopMostMessageBox.Show("This deck contains unsaved modifications. Save?", "Warning",
                                                           MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
                 switch (result)
                 {
@@ -313,29 +533,48 @@ namespace Octgn.DeckBuilder
                         return;
                 }
             }
-
             Game = null; // Close DB if required
+            WindowManager.DeckEditor = null;
+            if (this.exitOnClose)
+            {
+                Program.Exit();
+            }
         }
 
         private void CardSelected(object sender, SearchCardImageEventArgs e)
         {
-            cardImage.Source = new BitmapImage(e.Image != null
-                                                   ? CardModel.GetPictureUri(Game, e.SetId, e.Image)
-                                                   : Game.GetCardBackUri());
+            if (e.Image == null) return;
+            selection = e.Image;
+            set_id = e.SetId;
+            var cardid = e.CardId;
+            var set = SetManager.Get().GetById(e.SetId);
+            var card = set.Cards.FirstOrDefault(x => x.Id == cardid);
+            cardImageControl.Card.SetCard(card.Clone());
         }
 
         private void ElementSelected(object sender, SelectionChangedEventArgs e)
         {
-            var grid = (DataGrid) sender;
-            var element = (Deck.Element) grid.SelectedItem;
+            var grid = (DataGrid)sender;
+            var element = (ICard)grid.SelectedItem;
 
             // Don't hide the picture if the selected element was removed 
             // with a keyboard shortcut from the results grid
             if (element == null && !grid.IsFocused) return;
-
-            cardImage.Source = new BitmapImage(element != null
-                                                   ? new Uri(element.Card.Picture)
-                                                   : Game.GetCardBackUri());
+            var nc = element.ToMultiCard();
+            var sc = new Card(nc);
+                         //{
+                         //    ImageUri = nc.ImageUri,
+                         //    Name = nc.Name,
+                         //    Alternate = nc.Alternate,
+                         //    Id = nc.Id,
+                         //    Properties =
+                         //        nc.Properties.ToDictionary(
+                         //            x => x.Key.Clone() as string, x => x.Value.Clone() as CardPropertySet),
+                         //    SetId = nc.SetId
+                         //};
+            cardImageControl.Card.SetCard(sc);
+            selection = element.ImageUri;
+            set_id = element.GetSet().Id;
         }
 
         private void IsDeckOpen(object sender, CanExecuteRoutedEventArgs e)
@@ -347,27 +586,32 @@ namespace Octgn.DeckBuilder
         private void AddResultCard(object sender, SearchCardIdEventArgs e)
         {
             _unsaved = true;
-            Deck.Element element = ActiveSection.Cards.FirstOrDefault(c => c.Card.Id == e.CardId);
+            var element = ActiveSection.Cards.FirstOrDefault(c => c.Id == e.CardId);
             if (element != null)
                 element.Quantity += 1;
             else
-                ActiveSection.Cards.Add(new Deck.Element {Card = Game.GetCardById(e.CardId), Quantity = 1});
+            {
+                var card = Game.GetCardById(e.CardId);
+                ActiveSection.Cards.AddCard(card.ToMultiCard());
+                this.InvalidateVisual();
+            }
         }
 
         private void RemoveResultCard(object sender, SearchCardIdEventArgs e)
         {
             _unsaved = true;
-            Deck.Element element = ActiveSection.Cards.FirstOrDefault(c => c.Card.Id == e.CardId);
+            var element = ActiveSection.Cards.FirstOrDefault(c => c.Id == e.CardId);
             if (element == null) return;
             element.Quantity -= 1;
-            if (element.Quantity == 0)
-                ActiveSection.Cards.Remove(element);
+            if (element.Quantity <= 0)
+                ActiveSection.Cards.RemoveCard(element);
+            this.InvalidateVisual();
         }
 
         private void DeckKeyDownHandler(object sender, KeyEventArgs e)
         {
-            var grid = (DataGrid) sender;
-            var element = (Deck.Element) grid.SelectedItem;
+            var grid = (DataGrid)sender;
+            var element = (IMultiCard)grid.SelectedItem;
             if (element == null) return;
 
             // jods used a Switch statement here. I needed to check conditions of multiple keys.
@@ -378,16 +622,18 @@ namespace Octgn.DeckBuilder
             {
                 _unsaved = true;
                 if (moveDown <= items)
-                    ActiveSection.Cards.Move(grid.SelectedIndex, moveDown);
+                    ActiveSection.Cards.Move(element, moveDown);
                 grid.Focus();
+                grid.ScrollIntoView(element);
                 e.Handled = true;
             }
             else if (e.KeyboardDevice.IsKeyDown(Key.LeftCtrl) && e.KeyboardDevice.IsKeyDown(Key.Subtract))
             {
                 _unsaved = true;
                 if (moveUp >= 0)
-                    ActiveSection.Cards.Move(grid.SelectedIndex, moveUp);
+                    ActiveSection.Cards.Move(element, moveUp);
                 grid.Focus();
+                grid.ScrollIntoView(element);
                 e.Handled = true;
             }
             else if (e.KeyboardDevice.IsKeyDown(Key.Add) || e.KeyboardDevice.IsKeyDown(Key.Insert))
@@ -400,22 +646,38 @@ namespace Octgn.DeckBuilder
             {
                 _unsaved = true;
                 element.Quantity -= 1;
+                if (element.Quantity <= 0) ActiveSection.Cards.RemoveCard(element);
                 e.Handled = true;
             }
-		}
+        }
 
         private void DeckSort_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-        }		
+        }
 
         private void ElementEditEnd(object sender, DataGridCellEditEndingEventArgs e)
         {
             _unsaved = true;
+            var tb = e.EditingElement as TextBox;
+            if (tb == null) return;
+            int val = -1;
+            if (int.TryParse(tb.Text, out val))
+            {
+                if (val <= 0)
+                {
+                    var ic = sender as Selector;
+                    if (ic == null) return;
+                    var item = ic.SelectedItem as IMultiCard;
+                    if (item == null) return;
+                    ActiveSection.Cards.RemoveCard(item);
+                }
+            }
+
         }
 
         private void SetActiveSection(object sender, RoutedEventArgs e)
         {
-            ActiveSection = (Deck.Section) ((FrameworkElement) sender).DataContext;
+            ActiveSection = (ObservableSection)((FrameworkElement)sender).DataContext;
         }
 
         protected void OnPropertyChanged(string propertyName)
@@ -428,7 +690,389 @@ namespace Octgn.DeckBuilder
         {
             e.Handled = true;
         }
+
+        private void cardImage_MouseDown(object sender, MouseButtonEventArgs e)
+        {
+            //if (selection == null) return;
+            //var bim = new BitmapImage();
+            //bim.BeginInit();
+            //bim.CacheOption = BitmapCacheOption.OnLoad;
+            //var set = SetManager.Get().GetById(set_id);
+            //bim.UriSource = set.GetPictureUri(selection) ?? Game.GetCardBackUri();
+            ////bim.UriSource = CardModel.GetPictureUri(Game, set_id, selection);
+            //bim.EndInit();
+            //cardImage.Source = bim;
+        }
+
+        private DataGridRow activeRow;
+        private ObservableSection dragSection;
+
+        private bool dragging;
+
+        private void DeckCardMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (sender == null) return;
+            var ansc = FindAncestor<Expander>((FrameworkElement)sender);
+            if (ansc == null) return;
+
+            activeRow = FindAncestor<DataGridRow>((DependencyObject)e.OriginalSource);
+            dragSection = (ObservableSection)ansc.DataContext;
+            if (activeRow != null)
+            {
+                int cardIndex = activeRow.GetIndex();
+                var getCard = dragSection.Cards.ElementAt(cardIndex);
+                CardSelected(sender, new SearchCardImageEventArgs { SetId = getCard.SetId, Image = getCard.ImageUri, CardId = getCard.Id });
+            }
+        }
+        private DropAdorner adorner;
+        private void removeAdorner()
+        {
+            if (adorner != null)
+            {
+                AdornerLayer.GetAdornerLayer(adorner).Remove(adorner);
+                adorner = null;
+            }
+        }
+        private void PickUpDeckCard(object sender, MouseEventArgs e)
+        {
+            e.Handled = true;
+            if (MouseButtonState.Pressed.Equals(e.LeftButton) && activeRow != null && !dragging)
+            {
+                try
+                {
+                    ObservableMultiCard getCard = (ObservableMultiCard)activeRow.Item;
+                    DataObject dragCard = new DataObject("Card", getCard.ToMultiCard(getCard.Quantity));
+                    dragging = true;
+                    if (System.Windows.Forms.Control.ModifierKeys == System.Windows.Forms.Keys.Shift || getCard.Quantity <= 1)
+                    {
+                        dragSection.Cards.RemoveCard(getCard);
+                        DragDrop.DoDragDrop(activeRow, dragCard, DragDropEffects.All);
+                    }
+                    else
+                    {
+                        RemoveResultCard(null, new SearchCardIdEventArgs { CardId = getCard.Id });
+                        DragDrop.DoDragDrop(activeRow, dragCard, DragDropEffects.Copy);
+                    }
+                    dragging = false;
+
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex);
+                }
+            }
+            activeRow = null;
+        }
+        private void DeckDragEnter(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent("Card"))
+            {
+                e.Effects = DragDropEffects.None;
+            }
+            else
+            {
+                if (e.Effects == DragDropEffects.Copy)
+                {
+                    Expander exp = FindAncestor<Expander>(sender as FrameworkElement);
+                    ObservableSection dropSection = (ObservableSection)((FrameworkElement)exp).DataContext;
+                    var dragCard = e.Data.GetData("Card") as IMultiCard;
+                    var element = dropSection.Cards.FirstOrDefault(c => c.Id == dragCard.Id);
+                    if (element == null) //i.e. card is not found
+                    {
+                        e.Effects = DragDropEffects.All;
+                    }
+                }
+                if (e.Effects == DragDropEffects.All)
+                {
+                    DataGridRow row = FindAncestor<DataGridRow>(e.OriginalSource as FrameworkElement);
+                    DataGrid grid = (DataGrid)FindAncestor<Expander>(e.OriginalSource as FrameworkElement).Content;
+                    if (row != null)
+                    {
+                        AdornerLayer aLayer = AdornerLayer.GetAdornerLayer(row);
+                        removeAdorner();
+                        adorner = new DropAdorner(row);
+                        adorner.IsHitTestVisible = false;
+                        aLayer.Add(adorner);
+                    }
+                    else
+                    {
+                        removeAdorner();
+                        if (grid != null)
+                        {
+                            AdornerLayer aLayer = AdornerLayer.GetAdornerLayer(grid);
+                            adorner = new DropAdorner(grid, true);
+                            adorner.IsHitTestVisible = false;
+                            aLayer.Add(adorner);
+                        }
+                    }
+                }
+            }
+        }
+        private void TabControl_DragLeave(object sender, DragEventArgs e)
+        {
+            removeAdorner();
+        }
+        private void DeckDrop(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent("Card"))
+            {
+                _unsaved = true;
+                var dragCard = e.Data.GetData("Card") as IMultiCard;
+                ObservableSection dropSection = (ObservableSection)((FrameworkElement)sender).DataContext;
+                var element = dropSection.Cards.FirstOrDefault(c => c.Id == dragCard.Id);
+                if (e.Effects == DragDropEffects.Copy) dragCard.Quantity = 1;
+                if (element != null)
+                {
+                    element.Quantity = (byte)(element.Quantity + dragCard.Quantity);
+                }
+                else
+                {
+                    dropSection.Cards.AddCard(dragCard);
+                    DataGridRow row = FindAncestor<DataGridRow>(e.OriginalSource as FrameworkElement);
+                    if(row != null)
+                        dropSection.Cards.Move(dragCard, row.GetIndex());
+                }
+                removeAdorner();
+            }
+            e.Handled = true;
+        }
+        private static T FindAncestor<T>(DependencyObject Current)
+            where T : DependencyObject
+        {
+            do
+            {
+                if (Current is T)
+                {
+                    return (T)Current;
+                }
+                Current = System.Windows.Media.VisualTreeHelper.GetParent(Current);
+            }
+            while (Current != null);
+            return null;
+        }
+
+        private void ScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            ScrollViewer scv = (ScrollViewer)sender;
+            scv.ScrollToVerticalOffset(scv.VerticalOffset - e.Delta);
+            e.Handled = true;
+        }
+
+        #region IDeckBuilderPluginController
+        public GameManager Games
+        {
+            get
+            {
+                return GameManager.Get();
+            }
+        }
+
+        public void SetLoadedGame(Game game)
+        {
+            Game = game;
+        }
+
+        public Game GetLoadedGame()
+        {
+            return Game;
+        }
+
+        public void LoadDeck(IDeck deck)
+        {
+            Deck = deck.AsObservable();
+            _unsaved = true;
+        }
+
+        public IDeck GetLoadedDeck()
+        {
+            return Deck;
+        }
+
+        #endregion
+
+        private void SaveSearchClick(object sender, RoutedEventArgs e)
+        {
+            if ((SubscriptionModule.Get().IsSubscribed ?? false) == false)
+            {
+                var res =
+                    TopMostMessageBox.Show(
+                        "Bummer. This is a subscriber only feature...If you would like to enable this, please visit http://www.octgn.net and subscribe, I know I would!"
+                        + Environment.NewLine + "Would you like to go there now?",
+                        "Oh No!",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Exclamation);
+                if (res == MessageBoxResult.Yes)
+                {
+                    var url = SubscriptionModule.Get().GetSubscribeUrl(new SubType() { Description = "", Name = "" });
+                    if (url != null)
+                    {
+                        Program.LaunchUrl(url);
+                    }
+                }
+                return;
+            }
+            // Grab the selected search tab
+            if (searchTabs.SelectedItem == null) return;
+            if (!IsGameLoaded) return;
+            var search = searchTabs.SelectedItem as SearchControl;
+            var save = SearchSave.Create(search);
+            if (save.Save())
+            {
+                search.FileName = save.FileName;
+                search.SearchName = save.Name;
+            }
+        }
+
+        private void SaveSearchAsClick(object sender, RoutedEventArgs e)
+        {
+            if ((SubscriptionModule.Get().IsSubscribed ?? false) == false)
+            {
+                var res =
+                    TopMostMessageBox.Show(
+                        "Bummer. This is a subscriber only feature...If you would like to enable this, please visit http://www.octgn.net and subscribe, I know I would!"
+                        + Environment.NewLine + "Would you like to go there now?",
+                        "Oh No!",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Exclamation);
+                if (res == MessageBoxResult.Yes)
+                {
+                    var url = SubscriptionModule.Get().GetSubscribeUrl(new SubType() { Description = "", Name = "" });
+                    if (url != null)
+                    {
+                        Program.LaunchUrl(url);
+                    }
+                }
+                return;
+            }
+            // Grab the selected search tab
+            if (searchTabs.SelectedItem == null) return;
+            if (!IsGameLoaded) return;
+            var search = searchTabs.SelectedItem as SearchControl;
+            var save = SearchSave.Create(search);
+            if (save.SaveAs())
+            {
+                search.FileName = save.FileName;
+                search.SearchName = save.Name;
+            }
+        }
+
+        private void LoadSearchClick(object sender, RoutedEventArgs e)
+        {
+            if ((SubscriptionModule.Get().IsSubscribed ?? false) == false)
+            {
+                var res =
+                    TopMostMessageBox.Show(
+                        "Bummer. This is a subscriber only feature...If you would like to enable this, please visit http://www.octgn.net and subscribe, I know I would!"
+                        + Environment.NewLine + "Would you like to go there now?",
+                        "Oh No!",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Exclamation);
+                if (res == MessageBoxResult.Yes)
+                {
+                    var url = SubscriptionModule.Get().GetSubscribeUrl(new SubType() { Description = "", Name = "" });
+                    if (url != null)
+                    {
+                        Program.LaunchUrl(url);
+                    }
+                }
+                return;
+            }
+            if (!IsGameLoaded) return;
+            var save = SearchSave.Load();
+            if (save == null) return;
+
+            var game = GameManager.Get().GetById(save.GameId);
+            if (game == null)
+            {
+                TopMostMessageBox.Show("You don't have the game for this search installed", "Oh No", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            else if (Game.Id != save.GameId)
+            {
+                TopMostMessageBox.Show(
+                    "This search is for the game " + game.Name + ". You currently have the game " + Game.Name
+                    + " loaded so you can not load this search.", "Oh No", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var ctrl = new SearchControl(Game, save) { SearchIndex = Searches.Count == 0 ? 1 : Searches.Max(x => x.SearchIndex) + 1 };
+            ctrl.CardAdded += AddResultCard;
+            ctrl.CardRemoved += RemoveResultCard;
+            ctrl.CardSelected += CardSelected;
+            LoadFonts(ctrl.resultsGrid);
+            Searches.Add(ctrl);
+            searchTabs.SelectedIndex = Searches.Count - 1;
+        }
+
+        private void NotesTextChanged(object sender, TextChangedEventArgs e)
+        {
+            _unsaved = true;
+            Deck.Notes = (sender as TextBox).Text;
+        }
+
+        private void ShareDeckClicked(object sender, RoutedEventArgs e)
+        {
+            if (Deck == null) return;
+            if (Deck.CardCount() == 0) return;
+            var dlg = new ShareDeck(Deck);
+            dlg.ShowDialog();
+        }
+
+        private void ChangeSleeve(object sender, RequestNavigateEventArgs e)
+        {
+            if (SubscriptionModule.Get().IsSubscribed == false)
+            {
+                TopMostMessageBox.Show("You must be a subscriber to use this functionality", "Subscriber Warning",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            SleeveManager.Show();
+        }
+
+        private void RemoveSleeve(object sender, RequestNavigateEventArgs e)
+        {
+			if(Deck != null)
+				Deck.SleeveId = 0;
+        }
+
+        private void OnSleeveManagerClose(ApiSleeve obj)
+        {
+            if (obj == null)
+                return;
+            if (Deck == null)
+                return;
+            Deck.SleeveId = obj.Id;
+        }
     }
+
+    internal class DropAdorner : System.Windows.Documents.Adorner
+    {
+        bool atBottom;
+        public DropAdorner(UIElement adornedElement, bool atBottom = false)
+            : base(adornedElement)
+        {
+            this.atBottom = atBottom;
+        }
+        protected override void OnRender(DrawingContext drawingContext)
+        {
+            Rect adornedElementRect = new Rect(this.AdornedElement.DesiredSize);
+
+            SolidColorBrush renderBrush = new SolidColorBrush(Colors.Red);
+            Pen renderPen = new Pen(new SolidColorBrush(Colors.Red), 2);
+
+            if (atBottom)
+            {
+                drawingContext.DrawLine(renderPen, adornedElementRect.BottomLeft, adornedElementRect.BottomRight);
+                //Full surround of grid for better feedback, especially with really big lists.
+                drawingContext.DrawLine(renderPen, adornedElementRect.TopLeft, adornedElementRect.TopRight);
+                drawingContext.DrawLine(renderPen, adornedElementRect.TopLeft, adornedElementRect.BottomLeft);
+                drawingContext.DrawLine(renderPen, adornedElementRect.TopRight, adornedElementRect.BottomRight);
+            }
+            else
+                drawingContext.DrawLine(renderPen, adornedElementRect.TopLeft, adornedElementRect.TopRight);
+        }
+    }
+
 
     public class ActiveSectionConverter : IMultiValueConverter
     {

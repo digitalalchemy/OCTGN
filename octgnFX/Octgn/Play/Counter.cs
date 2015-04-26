@@ -1,15 +1,20 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
-using Octgn.Definitions;
 
 namespace Octgn.Play
 {
+    using System;
+    using System.Threading;
+    using System.Threading.Tasks;
+
+    using Octgn.Utils;
+
     public sealed class Counter : INotifyPropertyChanged
     {
         #region Private fields
 
-        private readonly CounterDef _defintion;
+        private readonly DataNew.Entities.Counter _defintion;
         private readonly byte _id;
         private readonly Player _player; // Player who owns this counter, if any        
         private int _state; // Value of this counter
@@ -23,13 +28,21 @@ namespace Octgn.Play
         // Name of this counter
         private readonly string _name;
 
-        public Counter(Player player, CounterDef def)
+        public Counter(Player player, DataNew.Entities.Counter def)
         {
             _player = player;
             _state = def.Start;
             _name = def.Name;
             _id = def.Id;
             _defintion = def;
+        }
+
+        public Player Owner
+        {
+            get
+            {
+                return _player;
+            }
         }
 
         public string Name
@@ -44,7 +57,7 @@ namespace Octgn.Play
             set { SetValue(value, Player.LocalPlayer, true); }
         }
 
-        public CounterDef Definition
+        public DataNew.Entities.Counter Definition
         {
             get { return _defintion; }
         }
@@ -68,28 +81,39 @@ namespace Octgn.Play
 
         #region Implementation
 
+
+
         // Get the id of this counter
         internal int Id
         {
             get { return 0x02000000 | (_player == null ? 0 : _player.Id << 16) | _id; }
         }
 
+        private readonly CompoundCall setCounterNetworkCompoundCall = new CompoundCall();
+
         // Set the counter's value
         internal void SetValue(int value, Player who, bool notifyServer)
         {
+            var oldValue = _state;
             // Check the difference with current value
             int delta = value - _state;
             if (delta == 0) return;
             // Notify the server if needed
             if (notifyServer)
-                Program.Client.Rpc.CounterReq(this, value);
+            {
+                setCounterNetworkCompoundCall.Call(() => Program.Client.Rpc.CounterReq(this, value));
+            }
             // Set the new value
             _state = value;
             OnPropertyChanged("Value");
             // Display a notification in the chat
             string deltaString = (delta > 0 ? "+" : "") + delta.ToString(CultureInfo.InvariantCulture);
-            Program.Trace.TraceEvent(TraceEventType.Information, EventIds.Event | EventIds.PlayerFlag(who),
-                                     "{0} sets {1} counter to {2} ({3})", who, this, value, deltaString);
+            if (notifyServer || who != Player.LocalPlayer)
+            {
+                Program.GameEngine.EventProxy.OnChangeCounter_3_1_0_0(who, this, oldValue);
+                Program.GameEngine.EventProxy.OnChangeCounter_3_1_0_1(who, this, oldValue);
+            }
+            Program.GameMess.PlayerEvent(who,"sets {0} counter to {1} ({2})", this, value, deltaString);
         }
 
         internal void Reset()

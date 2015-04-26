@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using Octgn.Core;
 using Octgn.Play.Actions;
 using Octgn.Play.Gui.Adorners;
 
@@ -14,12 +15,12 @@ namespace Octgn.Play.Gui
     {
         public TableCanvas()
         {
-            MoveCard.Doing += CardMoving;
+            MoveCards.Doing += CardMoving;
             Target.CreatingArrow += Targetting;
             Target.DeletingArrows += Untargetting;
             Unloaded += delegate
                             {
-                                MoveCard.Doing -= CardMoving;
+                                MoveCards.Doing -= CardMoving;
                                 Target.CreatingArrow -= Targetting;
                                 Target.DeletingArrows -= Untargetting;
                             };
@@ -29,12 +30,17 @@ namespace Octgn.Play.Gui
         {
             base.OnVisualChildrenChanged(visualAdded, visualRemoved);
             if (visualAdded == null) return;
-            var child = (ContentPresenter) visualAdded;
-            if (((Card) child.DataContext).Controller == Player.LocalPlayer) return;
+            if (Prefs.CardMoveNotification == Prefs.CardAnimType.None) return;
+            var child = (ContentPresenter)visualAdded;
+            if (((Card)child.DataContext).Controller == Player.LocalPlayer) return;
+            if (((Card)child.DataContext).CardMoved == false) return;
+            ((Card)child.DataContext).CardMoved = false;
             var scale = new ScaleTransform();
             child.RenderTransformOrigin = new Point(0.5, 0.5);
             child.RenderTransform = scale;
-            var anim = new DoubleAnimation
+            if (Prefs.CardMoveNotification == Prefs.CardAnimType.NormalAnimation)
+            {
+                var anim = new DoubleAnimation
                            {
                                Duration = new Duration(TimeSpan.FromMilliseconds(400)),
                                AutoReverse = true,
@@ -45,18 +51,39 @@ namespace Octgn.Play.Gui
                                From = 0.9,
                                FillBehavior = FillBehavior.Stop
                            };
-            scale.BeginAnimation(ScaleTransform.ScaleXProperty, anim);
-            scale.BeginAnimation(ScaleTransform.ScaleYProperty, anim);
+                scale.BeginAnimation(ScaleTransform.ScaleXProperty, anim);
+                scale.BeginAnimation(ScaleTransform.ScaleYProperty, anim);
+            }
+            else if (Prefs.CardMoveNotification == Prefs.CardAnimType.MinimalAnimation)
+            {
+                var anim = new DoubleAnimation
+                {
+                    Duration = new Duration(TimeSpan.FromMilliseconds(400)),
+                    AutoReverse = true,
+                    RepeatBehavior = new RepeatBehavior(2.166),
+                    AccelerationRatio = 0.2,
+                    DecelerationRatio = 0.7,
+                    To = 1.03,
+                    From = 0.97,
+                    FillBehavior = FillBehavior.Stop
+                };
+                scale.BeginAnimation(ScaleTransform.ScaleXProperty, anim);
+                scale.BeginAnimation(ScaleTransform.ScaleYProperty, anim);
+            }
         }
 
         private void CardMoving(object sender, EventArgs e)
         {
-            var action = (MoveCard) sender;
-            Table table = Program.Game.Table;
+            var action = (MoveCards)sender;
+            Table table = Program.GameEngine.Table;
             if (action.Who == Player.LocalPlayer || action.To != table || action.From != table)
                 return;
 
-            AnimateMove(action.Card, action.X, action.Y);
+            for (int i = 0; i < action.Cards.Length; i++)
+            {
+                var c = action.Cards[i];
+                AnimateMove(c, action.X[i], action.Y[i]);
+            }
         }
 
         private void AnimateMove(Card card, double x, double y)
@@ -91,7 +118,7 @@ namespace Octgn.Play.Gui
 
         private void Targetting(object sender, EventArgs e)
         {
-            var targetAction = (Target) sender;
+            var targetAction = (Target)sender;
             CardControl fromCard = null, toCard = null;
 
             foreach (ContentPresenter child in Children)
@@ -115,7 +142,7 @@ namespace Octgn.Play.Gui
 
         private void Untargetting(object sender, EventArgs e)
         {
-            var targetAction = (Target) sender;
+            var targetAction = (Target)sender;
             CardControl card = (from ContentPresenter child in Children
                                 where child.DataContext == targetAction.FromCard
                                 select VisualTreeHelper.GetChild(child, 0) as CardControl).FirstOrDefault();
